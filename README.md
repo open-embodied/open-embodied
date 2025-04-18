@@ -2,6 +2,8 @@
 
 The Open Source Robot Real Time OS for the  Embodied  Time
 
+embodied by
+Harvard University, Stanford University, Peking University, BUPT and more
 
 # Project Grand Plan
 
@@ -10,7 +12,7 @@ Unifying Robot Interfaces for the Era of Embodied Intelligence
 
 ## Abstract
 
-In the era of embodied intelligence, where robots are becoming increasingly integrated into our daily lives, the need for a unified robot interface has never been more pressing. Harvard University, Stanford University, Peking University, and other renowned institutions have jointly initiated the Open-Embodied project, aiming to create a comprehensive platform that encompasses robot operating systems, underlying control algorithms, and an application store for robot applications. This document outlines a grand plan for the Open-Embodied project, including its layered architecture, application-specific modules, and strategies for attracting global robotics researchers and manufacturers to participate.
+In the era of embodied intelligence, where robots are becoming increasingly integrated into our daily lives, the need for a unified robot interface has never been more pressing. Harvard University, Stanford University, Peking University, BUPT and other renowned institutions have jointly initiated the Open-Embodied project, aiming to create a comprehensive platform that encompasses robot operating systems, underlying control algorithms, and an application store for robot applications. This document outlines a grand plan for the Open-Embodied project, including its layered architecture, application-specific modules, and strategies for attracting global robotics researchers and manufacturers to participate.
 
 ## 1. Introduction
 
@@ -91,3 +93,16 @@ Security and privacy are important considerations for the Open-Embodied project,
 ## 6. Conclusion
 
 The Open-Embodied project is a grand initiative aimed at unifying robot interfaces for the era of embodied intelligence. By adopting a layered architecture, application-specific modules, and a series of strategies for attracting global participation, the project can create a vibrant and collaborative ecosystem that drives innovation and advancement in the field of robotics. The project's open-source nature, community-building activities, and education and training programs will ensure that researchers and manufacturers from around the world can contribute to and benefit from the project. With the support of leading robotics companies, research institutions, and standards organizations, the Open-Embodied project has the potential to become the de facto standard for robot interfaces, enabling seamless communication and interoperability between different robot platforms and systems.
+
+
+## Acknowledgements
+
+open-embodied has benefitted from the following projects/resources.
+
+--RROS
+  [BUPT RROS](https://github.com/BUPT-OS/RROS)
+
+- [Evl/xenomai (linux-evl)](https://evlproject.org/core/). We learned from evl core how to implement a dual kernel and use dovetail for interrupt virtualization and libevl for user library. Thanks, @Philippe for his genius work and patient explanation in the riot!
+- [Rust-for-Linux](https://github.com/Rust-for-Linux/linux): We use RFL to write RROS in Linux. We ask a lot of questions on RFL Zulip and constructing safety abstractions. Kudos to @ojeda, @Wedson,  @Alex, @boqun, @Gary, @Björn in the RFL community for patiently helping us. We hope to bring more safety abstraction back to the RFL in return!
+- [Muduo](https://www.cnblogs.com/wsg1100/p/13836497.html): His detailed blog gives us insights for xenomai/evl project.
+- All prospective contributors to RROS in the future!
