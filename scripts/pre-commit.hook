@@ -1,0 +1,75 @@
+#!/bin/bash
+
+# Options
+CPPCHECK_OPTS=". -i lib/ --error-exitcode=1 --force"
+
+# Check installation of the clang-format
+CLANG_FORMAT=$(which clang-format)
+if [ $? -ne 0 ]; then
+	echo "[!] clang-format not installed. Unable to check source file format policy." >&2
+	exit 1
+fi
+
+# Check formatting
+CLANG_FORMAT_RESULT=0
+FILES=`git diff --cached --name-only --diff-filter=ACMR | grep -E "\.(c|cpp|h)$"`
+for FILE in $FILES; do
+    $CLANG_FORMAT < $FILE | cmp -s $FILE -
+    if [ $? -ne 0 ]; then
+       echo "[!] $FILE does not respect the agreed coding style." >&2
+       CLANG_FORMAT_RESULT=1
+    fi
+done
+
+if [ $CLANG_FORMAT_RESULT -eq 1 ]; then
+	echo "" >&2
+	echo "Make sure you have run clang-format with 'make clang-format'" >&2
+	exit 1
+fi
+
+# Check installation of the cppcheck
+CPPCHECK=$(which cppcheck)
+if [ $? -ne 0 ]; then
+    echo "[!] cppcheck not installed. Unable to perform static analysis." >&2
+    exit 1
+fi
+
+# Expected Cppcheck version is 1.90+
+# First, Cppcheck 2.x
+if [ -z "$($CPPCHECK --version | grep -E '^Cppcheck\s2')" ]; then
+    # Second, Cppcheck 1.x
+    CPPCHECK_VER=$($CPPCHECK --version | sed -Ee 's/Cppcheck 1.([0-9]+)/\1/;q')
+    if [ $CPPCHECK_VER -lt 90 ]; then
+        echo    "[!] cppcheck version must be at least 1.90." >&2
+        echo -e "    Check 'Developer Info' for building Cppcheck from source:\n" \
+                "          http://cppcheck.sourceforge.net/devinfo/" >&2
+        exit 1
+    fi
+fi
+
+# Static analysis
+$CPPCHECK $CPPCHECK_OPTS >/dev/null
+if [ $? -ne 0 ]; then
+    echo "" >&2
+    echo "Fail to pass static analysis." >&2
+    echo
+    exit 1
+fi
+
+# Prevent unsafe functions
+root=$(git rev-parse --show-toplevel)
+banned="([^f]gets\()|(sprintf\()|(strcpy\()"
+status=0
+for file in $(git diff --staged --name-only | grep -E "\.(c|cc|cpp|h|hh|hpp)\$")
+do
+    filepath="${root}/${file}"
+    output=$(grep -nrE "${banned}" "${filepath}")
+    if [ ! -z "${output}" ]; then
+        echo "Dangerous function detected in ${filepath}"
+        echo "${output}"
+        echo
+        echo "Read 'Common vulnerabilities guide for C programmers' carefully."
+        echo "(https://security.web.cern.ch/security/recommendations/en/codetools/c.shtml)"
+        exit 1
+    fi
+done
