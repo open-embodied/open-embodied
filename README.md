@@ -10,6 +10,11 @@ Harvard University, Stanford University, Peking University, BUPT and more
 
 Unifying Robot Interfaces for the Era of Embodied Intelligence
 
+
+# Core of The open embodied project
+
+A Linux-like real-time operating system for Robotics
+
 ## Abstract
 
 In the era of embodied intelligence, where robots are becoming increasingly integrated into our daily lives, the need for a unified robot interface has never been more pressing. Harvard University, Stanford University, Peking University, BUPT and other renowned institutions have jointly initiated the Open-Embodied project, aiming to create a comprehensive platform that encompasses robot operating systems, underlying control algorithms, and an application store for robot applications. This document outlines a grand plan for the Open-Embodied project, including its layered architecture, application-specific modules, and strategies for attracting global robotics researchers and manufacturers to participate.
