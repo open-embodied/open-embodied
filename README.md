@@ -1,4 +1,12 @@
-# Open-Embodied Project Grand Plan: Unifying Robot Interfaces for the Era of Embodied Intelligence
+# Open-Embodied 
+
+The Open Source Robot Real Time OS for the  Embodied  Time
+
+
+# Project Grand Plan
+
+
+Unifying Robot Interfaces for the Era of Embodied Intelligence
 
 ## Abstract
 
