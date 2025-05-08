@@ -10,6 +10,9 @@ Harvard University, Stanford University, Peking University, BUPT and more
 
 Unifying Robot Interfaces for the Era of Embodied Intelligence
 
+# Development Studio
+
+https://www.gitpp.com/dpqq-ros-agent/deep-ros-agent
 
 # Core of The open embodied project
 
