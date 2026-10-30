@@ -3,7 +3,10 @@
 The Open Source Robot Real Time OS for the  Embodied  Time
 
 embodied by
+
 Harvard University, Stanford University, Peking University, BUPT and more
+
+supported by DeepOpen  www.deepopen.com
 
 # Project Grand Plan
 
