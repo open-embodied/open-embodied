@@ -8,6 +8,9 @@ Harvard University, Stanford University, Peking University, BUPT and more
 
 supported by DeepOpen  www.deepopen.com
 
+study roadmap:  https://github.com/deepopen-com/deepopen-talks-awesome
+[study readmap](https://github.com/deepopen-com/deepopen-talks-awesome)
+
 # Project Grand Plan
 
 
