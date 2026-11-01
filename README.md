@@ -6,6 +6,13 @@ embodied by
 
 Harvard University, Stanford University, Peking University, BUPT and more
 
+
+# Data, Benchmark and List
+
+by DeepOpen  数据、基准和榜单 [数据、基准和榜单](https://aie.gitcc.com/aic/talk/embodied-data-2026.html)
+
+by DeepOpen  Data, Benchmark and List [Data, Benchmark and List](https://aie.gitcc.com/aic/talk/embodied-data-2026.html)
+
 supported by DeepOpen  www.deepopen.com
 
 study roadmap:  https://github.com/deepopen-com/deepopen-talks-awesome
