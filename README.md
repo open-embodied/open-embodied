@@ -7,17 +7,6 @@ embodied by
 Harvard University, Stanford University, Peking University, BUPT and more
 
 
-# Data, Benchmark and List
-
-by DeepOpen  数据、基准和榜单 [数据、基准和榜单](https://aie.gitcc.com/aic/talk/embodied-data-2026.html)
-
-by DeepOpen  Data, Benchmark and List [Data, Benchmark and List](https://aie.gitcc.com/aic/talk/embodied-data-2026.html)
-
-supported by DeepOpen  www.deepopen.com
-
-study roadmap:  https://github.com/deepopen-com/deepopen-talks-awesome
-[study readmap](https://github.com/deepopen-com/deepopen-talks-awesome)
-
 # Project Grand Plan
 
 
@@ -26,6 +15,10 @@ Unifying Robot Interfaces for the Era of Embodied Intelligence
 # Development Studio
 
 https://www.gitcc.com/dpqq-ros-agent/deep-ros-agent
+
+# VLLM
+
+https://www.gitcc.com
 
 # Core of The open embodied project
 
@@ -127,3 +120,15 @@ open-embodied has benefitted from the following projects/resources.
 - [Rust-for-Linux](https://github.com/Rust-for-Linux/linux): We use RFL to write RROS in Linux. We ask a lot of questions on RFL Zulip and constructing safety abstractions. Kudos to @ojeda, @Wedson,  @Alex, @boqun, @Gary, @Björn in the RFL community for patiently helping us. We hope to bring more safety abstraction back to the RFL in return!
 - [Muduo](https://www.cnblogs.com/wsg1100/p/13836497.html): His detailed blog gives us insights for xenomai/evl project.
 - All prospective contributors to RROS in the future!
+
+
+# Data, Benchmark and List
+
+by DeepOpen  数据、基准和榜单 [数据、基准和榜单](https://aie.gitcc.com/aic/talk/embodied-data-2026.html)
+
+by DeepOpen  Data, Benchmark and List [Data, Benchmark and List](https://aie.gitcc.com/aic/talk/embodied-data-2026.html)
+
+supported by DeepOpen  www.deepopen.com
+
+study roadmap:  https://github.com/deepopen-com/deepopen-talks-awesome
+[study readmap](https://github.com/deepopen-com/deepopen-talks-awesome)
