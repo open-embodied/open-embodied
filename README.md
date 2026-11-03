@@ -20,6 +20,11 @@ https://www.gitcc.com/dpqq-ros-agent/deep-ros-agent
 
 https://www.gitcc.com
 
+# Datasets
+
+Opensource Embodied Datasets [Opensource Embodied Datasets](https://robot-ai.gitcc.com/)
+
+
 # Core of The open embodied project
 
 A Linux-like real-time operating system for Robotics
