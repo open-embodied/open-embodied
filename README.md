@@ -25,6 +25,19 @@ https://www.gitcc.com
 Opensource Embodied Datasets [Opensource Embodied Datasets](https://robot-ai.gitcc.com/)
 
 
+# How TO Get Data
+
+data [data](https://aie.gitcc.com/aic/talk/embodied-data-2026.html)
+
+# Benchmark
+
+[Benchmark](https://aie.gitcc.com/aic/talk/embodied-benchmark-book.html)
+
+# Top Open source Projects
+
+[Top Open source Projects](https://aie.gitcc.com/aic/talk/embodied-top-2026.html)
+
+
 # Core of The open embodied project
 
 A Linux-like real-time operating system for Robotics
