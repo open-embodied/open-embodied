@@ -7,36 +7,6 @@ embodied by
 Harvard University, Stanford University, Peking University, BUPT and more
 
 
-# Book
-
-The Open Landscape of Embodied AI[The Open Landscape of Embodied AI](https://aie.gitcc.com/aic/embodied/embodied-ai-en.html)
-
-# Project Grand Plan
-
-Unifying Robot Interfaces for the Era of Embodied Intelligence
-
-# Development Studio
-
-https://www.gitcc.com/dpqq-ros-agent/deep-ros-agent
-
-# VLLM
-
-https://www.gitcc.com
-
-# Datasets
-
-Opensource Embodied Datasets [Opensource Embodied Datasets](https://robot-ai.gitcc.com/)
-
-
-# How TO Get Data
-
-data [data](https://aie.gitcc.com/aic/talk/embodied-data-2026.html)
-
-# Benchmark
-
-[Benchmark](https://aie.gitcc.com/aic/talk/embodied-benchmark-book.html)
-
-# Top Open source Projects
 
 
 # The Ten Most Influential Open-Source Embodied AI Projects
@@ -203,6 +173,38 @@ open-embodied has benefitted from the following projects/resources.
 - [Muduo](https://www.cnblogs.com/wsg1100/p/13836497.html): His detailed blog gives us insights for xenomai/evl project.
 - All prospective contributors to RROS in the future!
 
+
+
+# Book
+
+The Open Landscape of Embodied AI[The Open Landscape of Embodied AI](https://aie.gitcc.com/aic/embodied/embodied-ai-en.html)
+
+# Project Grand Plan
+
+Unifying Robot Interfaces for the Era of Embodied Intelligence
+
+# Development Studio
+
+https://www.gitcc.com/dpqq-ros-agent/deep-ros-agent
+
+# VLLM
+
+https://www.gitcc.com
+
+# Datasets
+
+Opensource Embodied Datasets [Opensource Embodied Datasets](https://robot-ai.gitcc.com/)
+
+
+# How TO Get Data
+
+data [data](https://aie.gitcc.com/aic/talk/embodied-data-2026.html)
+
+# Benchmark
+
+[Benchmark](https://aie.gitcc.com/aic/talk/embodied-benchmark-book.html)
+
+# Top Open source Projects
 
 # Data, Benchmark and List
 
