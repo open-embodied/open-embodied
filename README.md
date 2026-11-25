@@ -14,7 +14,7 @@ Harvard University, Stanford University, Peking University, BUPT and more
 Biuld your own Embodied Hardware  [Biuld your own Embodied Hardware](https://aie.gitcc.com/embodied/embodied-robots.html)
 
 
-Biuld your own hand Hardware  [Biuld your own hand Hardware](https://aie.gitcc.com/embodied/deephand.html)
+Biuld your own hand Hardware  [Biuld your own hand Hardware](https://github.com/open-embodied/deephand)
 
 
 # sim world DeepHunch
