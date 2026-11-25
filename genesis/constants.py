@@ -1,0 +1,240 @@
+import enum
+
+URDF_FORMAT = ".urdf"
+XACRO_FORMAT = ".xacro"
+MJCF_FORMAT = ".xml"
+# Root tags identifying the format of inline XML content passed as 'FileMorph.file'.
+XML_ROOT_TAG_TO_FORMAT = {"mujoco": MJCF_FORMAT, "robot": URDF_FORMAT}
+GLTF_FORMATS = (".glb", ".gltf")
+MESH_FORMATS = (".obj", ".stl", ".dae", *GLTF_FORMATS)
+USD_FORMATS = (".usd", ".usda", ".usdc", ".usdz")
+
+# dynamic loading
+ACTIVE = 1
+INACTIVE = 0
+
+
+class IntEnum(enum.IntEnum):
+    def __repr__(self):
+        return f"<gs.{self.__class__.__name__}.{self.name}: {self.value}>"
+
+    def __format__(self, format_spec):
+        return f"<{self.name}: {self.value}>"
+
+
+class StrEnum(enum.StrEnum):
+    """Enumeration of a user-facing option, whose value is the name of its member so that it reads as such in a file."""
+
+    @staticmethod
+    def _generate_next_value_(name, start, count, last_values):
+        return name
+
+    def __repr__(self):
+        return f"<gs.{self.__class__.__name__}.{self.name}>"
+
+
+# geom type in rigid solver
+class GEOM_TYPE(IntEnum):
+    # Beware PLANE must be the first geometry type as this is assumed by MPR collision detection.
+    PLANE = 0
+    SPHERE = 1
+    ELLIPSOID = 2
+    CYLINDER = 3
+    CAPSULE = 4
+    BOX = 5
+    MESH = 6
+    TERRAIN = 7
+
+
+class STRUCTURE(IntEnum):
+    """How the shape and the connectivity of the entities of a material change (see 'Material.structure').
+
+    It decides how an entity is drawn outside of its debug representation, and whether its visual geoms admit
+    DynamicVertices.
+    """
+
+    # The shape never changes: the visual meshes are posed by the links, and admit DynamicVertices.
+    RIGID = 0
+    # The shape changes and the connectivity never does: a visual mesh moved with the simulated vertices or skinned on
+    # the particles.
+    DEFORMABLE = 1
+    # The connectivity holds until the body tears: a visual mesh skinned on the particles until its edges stretch past
+    # a bound, then the surface reconstructed from the particles in that environment.
+    TEARABLE = 2
+    # No connectivity: the surface reconstructed from the active particles at each refresh
+    AMORPHOUS = 3
+
+
+# joint type in rigid solver, ranked by number of dofs
+class JOINT_TYPE(IntEnum):
+    FIXED = 0
+    REVOLUTE = 1
+    PRISMATIC = 2
+    SPHERICAL = 3
+    FREE = 4
+
+
+class EQUALITY_TYPE(IntEnum):
+    CONNECT = 0
+    WELD = 1
+    JOINT = 2
+    SCREW = 3
+
+
+class CTRL_MODE(IntEnum):
+    POSITION = 0
+    VELOCITY = 1
+    FORCE = 2
+
+
+######### User accessible constants do not capitalize #########
+# rigid solver intergrator
+class integrator(StrEnum):
+    Euler = enum.auto()
+    implicitfast = enum.auto()
+    approximate_implicitfast = enum.auto()
+
+
+# rigid solver constraint solver
+class constraint_solver(StrEnum):
+    CG = enum.auto()
+    Newton = enum.auto()
+
+
+# rigid solver contact friction cone
+class friction_cone(StrEnum):
+    """
+    Contact friction cone model, trading numerical robustness for physical accuracy.
+
+    'pyramidal' (the default) approximates the friction cone by a pyramid: robust and easy to solve, but the
+    approximation makes friction anisotropic (the effective limit depends on the sliding direction). 'elliptic' is
+    the exact cone: friction is isotropic and bounded by its true Euclidean limit sqrt(f_t1^2 + f_t2^2) <= mu * f_n
+    in every direction, and with a high 'impratio' it holds resting stacks without the slow tangential creep of
+    regularized friction, in return for being harder to solve and more sensitive numerically. Prefer pyramidal for
+    robustness; choose elliptic when isotropic friction or firm static friction matters - e.g. objects that must stay
+    put at rest instead of slowly creeping.
+    """
+
+    pyramidal = enum.auto()
+    elliptic = enum.auto()
+
+
+# rigid solver contact resolution
+class contact_resolution(StrEnum):
+    """
+    How a contact's normal force and friction force are resolved against each other.
+
+    'convex' poses the whole contact as a single smooth convex cost and lets the solver trade the normal residual
+    against the tangential one. Because the friction limit mu * f_n bounds the pair jointly, a contact sliding fast
+    enough that its friction rows demand more force than the cone allows can be answered by raising f_n instead: a body
+    launched horizontally then lifts off a flat floor, by more the faster it slides. In exchange the whole problem stays
+    one convex program, which converges predictably on stiff articulated chains and high mass ratios.
+
+    'signorini' bounds friction against the normal force the contact has actually developed, so that force is set by the
+    contact's own normal state rather than by tangential demand, and sliding can never inflate it - a sliding body
+    decelerates at mu * g and stays down at any speed. Contacts are resolved by successive approximation, costing extra
+    solver iterations and giving up the single-convex-program guarantee. Prefer it whenever sliding contact matters;
+    choose 'convex' for parity with engines built on that formulation, or if a stiff scene converges better under it.
+
+    'signorini' requires the elliptic friction cone, whose rows separate into a normal row and a friction disc - the
+    pyramidal cone mixes the normal direction into every row and admits no such split - and the Newton constraint
+    solver, the only one that reaches the fixed point of the resulting successive approximation. It implements the
+    Coulomb complementarity problem eq. (C.22) of Alexis Duburcq, "Learning and Optimization of the Locomotion with an
+    Exoskeleton for Paraplegic People", PhD thesis, Universite Paris Sciences et Lettres, 2022 (HAL tel-04166955),
+    Appendix C, whose Signorini condition is what forbids the normal force from absorbing tangential demand.
+    """
+
+    convex = enum.auto()
+    signorini = enum.auto()
+
+
+# rigid solver broadphase traversal strategy
+class broadphase_traversal(StrEnum):
+    """
+    Strategy for broad-phase collision detection in the rigid solver.
+
+    Broad-phase quickly eliminates geometry pairs that cannot collide before the more expensive narrow-phase runs.
+
+    At init time, geometry pairs that can never collide are filtered out (same-link, fixed-vs-fixed, contype/conaffinity
+    mismatch, etc.), producing a list of *valid pairs*. The geometries of a link keep their pose in the link, so the
+    links are swept first, each with the box bounding all its geometries, and the geometry pairs are only tested under
+    the link pairs whose boxes overlap. The two strategies differ in how they sweep the links each step:
+
+    Attributes
+    ----------
+    SAP : str
+        Sweep-and-prune. Sorts the link boxes along one axis then only checks the link pairs that overlap on that axis.
+        The sort and sweep are single-threaded per environment, which uses GPU cores poorly when there are few
+        environments. The boxes stay nearly sorted from one step to the next, so the sort usually runs in near-linear
+        time, up to O(n_links^2) after a large reordering, and the sweep checks the k link pairs overlapping along
+        the axis.
+    ALL_VS_ALL : str
+        Checks every valid link pair every step, in parallel across GPU threads. The cost per step grows with the number
+        of valid link pairs, which grows quadratically with the number of independent bodies in the scene. With
+        heterogeneous entities, every environment also checks the link pairs of the variants it does not carry.
+
+    Notes
+    -----
+    ``RigidOptions.broadphase_traversal`` defaults to ``None``, which lets the solver choose automatically:
+
+    - **CPU backend** -> ``SAP`` (sequential sweep is efficient on CPU).
+    - **GPU backend** -> ``ALL_VS_ALL`` (parallel pair checking is faster).
+    - **GPU with heterogeneous entities** -> ``SAP`` (the links of the variants an environment does not carry have
+      empty boxes, which yield no candidate pair).
+    """
+
+    SAP = enum.auto()
+    ALL_VS_ALL = enum.auto()
+
+
+class link_ref_frame(IntEnum):
+    """
+    Reference frame at which a per-link quantity is expressed.
+
+    Each member fixes an origin, about which spatial quantities are translated, together with an orientation, by which
+    quantities given in local coordinates are rotated. 'root_COM' is the center of mass of the whole kinematic tree the
+    link belongs to, with world-aligned axes; the solver stores link velocities and generalized forces there natively,
+    so it is the only frame reached without a moment arm. 'link_COM' is the center of mass of the link, with the axes of
+    its inertial frame. 'link_origin' is the origin of the link, with the axes of the link frame.
+    """
+
+    root_COM = 0
+    link_COM = 1
+    link_origin = 2
+
+
+# backend
+class backend(IntEnum):
+    cpu = 0
+    gpu = 1
+    cuda = 2
+    amdgpu = 3
+    metal = 4
+
+    def __format__(self, format_spec):
+        return f"gs.{self.name}"
+
+
+# image types for visualization
+class IMAGE_TYPE(IntEnum):
+    RGB = 0
+    DEPTH = 1
+    SEGMENTATION = 2
+    NORMAL = 3
+
+    def __format__(self, format_spec):
+        return self.name
+
+
+class TEXTURE_MAP_TYPE(IntEnum):
+    """The surface map a dynamic texture binds to."""
+
+    DIFFUSE = 0
+    EMISSIVE = 1
+
+
+# parallelize
+class PARA_LEVEL(IntEnum):
+    NEVER = 0  # when using cpu
+    PARTIAL = 1  # when using gpu for non-batched scene
+    ALL = 2  # when using gpu for batched scene

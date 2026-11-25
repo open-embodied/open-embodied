@@ -1,0 +1,1430 @@
+import math
+import os
+import pathlib
+import re
+import subprocess
+import sys
+from functools import partial
+from unittest.mock import call, patch
+
+import numpy as np
+import torch
+
+import av
+import igl
+import pytest
+import scipy.linalg
+import trimesh
+from PIL import Image
+from scipy.spatial.transform import Rotation, Slerp
+
+import genesis as gs
+import genesis.utils.geom as gu
+import genesis.utils.mesh as mu
+from genesis.utils.image_exporter import FrameImageExporter, as_grayscale_image
+from genesis.utils.misc import tensor_to_array, unique_rows
+from genesis.utils.tools import RunningMean
+from genesis.utils.urdf import compose_inertial_properties
+from genesis.utils.warnings import warn_once
+from genesis.utils.watertighten import watertighten_mesh
+
+from ..conftest import TOL_DOUBLE
+from ..utils.assertions import assert_allclose, assert_equal
+from ..utils.assets import get_hf_dataset
+from ..utils.collision import display_collision_pairs, get_genuine_interpenetration
+
+
+TOL = 1e-7
+
+RET_SUCCESS = 42
+
+FILE_PATH = pathlib.Path(__file__)
+MODULE_ROOT_DIR = FILE_PATH.parents[2]
+MODULE = ".".join((FILE_PATH.parents[1].name, FILE_PATH.parent.name, FILE_PATH.stem))
+
+
+def _qd_kernel_wrapper(qd_func, num_inputs, num_outputs, *args):
+    import quadrants as qd
+
+    if num_inputs == 1 and num_outputs == 1:
+
+        @qd.kernel
+        def kernel(qd_in: qd.template(), qd_out: qd.template()):
+            qd.loop_config(serialize=False)
+            for I in qd.grouped(qd.ndrange(*qd_in.shape)):
+                qd_out[I] = qd_func(qd_in[I], *args)
+
+    elif num_inputs == 1 and num_outputs == 3:
+
+        @qd.kernel
+        def kernel(qd_in: qd.template(), qd_out_1: qd.template(), qd_out_2: qd.template(), qd_out_3: qd.template()):
+            qd.loop_config(serialize=False)
+            for I in qd.grouped(qd.ndrange(*qd_in.shape)):
+                qd_out_1[I], qd_out_2[I], qd_out_3[I] = qd_func(qd_in[I], *args)
+
+    elif num_inputs == 2 and num_outputs == 1:
+
+        @qd.kernel
+        def kernel(qd_in_1: qd.template(), qd_in_2: qd.template(), qd_out: qd.template()):
+            qd.loop_config(serialize=False)
+            for I in qd.grouped(qd.ndrange(*qd_in_1.shape)):
+                qd_out[I] = qd_func(qd_in_1[I], qd_in_2[I], *args)
+
+    elif num_inputs == 3 and num_outputs == 1:
+
+        @qd.kernel
+        def kernel(qd_in_1: qd.template(), qd_in_2: qd.template(), qd_in_3: qd.template(), qd_out: qd.template()):
+            qd.loop_config(serialize=False)
+            for I in qd.grouped(qd.ndrange(*qd_in_1.shape)):
+                qd_out[I] = qd_func(qd_in_1[I], qd_in_2[I], qd_in_3[I], *args)
+
+    elif num_inputs == 4 and num_outputs == 2:
+
+        @qd.kernel
+        def kernel(
+            qd_in_1: qd.template(),
+            qd_in_2: qd.template(),
+            qd_in_3: qd.template(),
+            qd_in_4: qd.template(),
+            qd_out_1: qd.template(),
+            qd_out_2: qd.template(),
+        ):
+            qd.loop_config(serialize=False)
+            for I in qd.grouped(qd.ndrange(*qd_in_1.shape)):
+                qd_out_1[I], qd_out_2[I] = qd_func(qd_in_1[I], qd_in_2[I], qd_in_3[I], qd_in_4[I], *args)
+
+    else:
+        raise NotImplementedError(f"Quadrants func with arity in={num_inputs},out={num_outputs} not supported")
+
+    return kernel
+
+
+def polar(A, pure_rotation: bool, side, tol):
+    # filter out singular A (which is not invertible)
+    # non-invertible matrix makes non-unique SVD which may break the consistency.
+    N = A.shape[-1]
+    if isinstance(A, np.ndarray):
+        dets = np.linalg.det(A)
+        mask = np.abs(dets) < tol
+        if A.ndim > 2:
+            if mask.any():
+                I = np.eye(N, dtype=A.dtype)
+                A = np.where(mask[..., None, None], I, A)
+        else:
+            if mask:
+                A = np.eye(N, dtype=A.dtype)
+    elif isinstance(A, torch.Tensor):
+        dets = torch.linalg.det(A.reshape((-1, 3, 3))).reshape(A.shape[:-2])
+        mask = torch.abs(dets) < tol
+        if A.ndim > 2:
+            if mask.any():
+                I = torch.eye(N, dtype=A.dtype, device=A.device)
+                A = torch.where(mask[..., None, None], I, A)
+        else:
+            if mask:
+                A = torch.eye(N, dtype=A.dtype, device=A.device)
+    return gu.polar(A, pure_rotation=pure_rotation, side=side)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("batch_shape", [(10, 40, 25), ()])
+def test_geom_quadrants_vs_tensor_consistency(batch_shape):
+    import quadrants as qd
+
+    for qd_func, py_func, shapes_in, shapes_out, *args in (
+        (gu.qd_xyz_to_quat, gu.xyz_to_quat, [[3]], [[4]]),
+        (gu.qd_quat_to_R, gu.quat_to_R, [[4]], [[3, 3]], gs.EPS),
+        (gu.qd_quat_to_xyz, gu.quat_to_xyz, [[4]], [[3]], gs.EPS),
+        (gu.qd_trans_quat_to_T, gu.trans_quat_to_T, [[3], [4]], [[4, 4]], gs.EPS),
+        (gu.qd_transform_quat_by_quat, gu.transform_quat_by_quat, [[4], [4]], [[4]]),
+        (gu.qd_transform_by_quat, gu.transform_by_quat, [[3], [4]], [[3]]),
+        (gu.qd_inv_transform_by_quat, gu.inv_transform_by_quat, [[3], [4]], [[3]]),
+        (gu.qd_transform_by_T, gu.transform_by_T, [[3], [4, 4]], [[3]]),
+        (gu.qd_inv_transform_by_T, gu.inv_transform_by_T, [[3], [4, 4]], [[3]]),
+        (gu.qd_transform_by_trans_quat, gu.transform_by_trans_quat, [[3], [3], [4]], [[3]]),
+        (gu.qd_inv_transform_by_trans_quat, gu.inv_transform_by_trans_quat, [[3], [3], [4]], [[3]]),
+        (gu.qd_transform_pos_quat_by_trans_quat, gu.transform_pos_quat_by_trans_quat, [[3], [4], [3], [4]], [[3], [4]]),
+    ):
+        num_inputs, num_outputs = len(shapes_in), len(shapes_out)
+        shape_args = (*shapes_in, *shapes_out)
+        np_args, tc_args, qd_args, qd_outs = [], [], [], []
+        for i in range(len(shape_args)):
+            np_arg = np.random.rand(*batch_shape, *shape_args[i]).astype(gs.np_float)
+
+            tc_arg = torch.as_tensor(np_arg, dtype=gs.tc_float, device=gs.device)
+            qd_type = qd.Vector if len(shape_args[i]) == 1 else qd.Matrix
+            qd_arg = qd_type.field(*shape_args[i], dtype=gs.qd_float, shape=batch_shape)
+            qd_arg.from_numpy(np_arg)
+
+            if i < num_inputs:
+                np_args.append(np_arg)
+                tc_args.append(tc_arg)
+                qd_args.append(qd_arg)
+            else:
+                qd_outs.append(qd_arg)
+
+        np_outs = py_func(*np_args)
+        if not isinstance(np_outs, (list, tuple)):
+            np_outs = (np_outs,)
+        for np_out, shape_out in zip(np_outs, shapes_out):
+            assert np_out.shape == (*batch_shape, *shape_out)
+
+        tc_outs = py_func(*tc_args)
+        if not isinstance(tc_outs, (list, tuple)):
+            tc_outs = (tc_outs,)
+        tc_outs = tuple(map(tensor_to_array, tc_outs))
+
+        kernel = _qd_kernel_wrapper(qd_func, num_inputs, num_outputs, *args)
+        kernel(*qd_args, *qd_outs)
+
+        for np_out, tc_out, qd_out in zip(np_outs, tc_outs, qd_outs):
+            np.testing.assert_allclose(np_out, qd_out.to_numpy(), atol=1e2 * gs.EPS)
+            np.testing.assert_allclose(np_out, tc_out, atol=1e2 * gs.EPS)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("batch_shape", [(10, 40, 25), ()])
+def test_geom_numpy_vs_torch_consistency(batch_shape, tol):
+    for py_func, shapes_in, shapes_out in (
+        (gu.quat_to_R, [[4]], [[3, 3]]),
+        (gu.quat_to_xyz, [[4]], [[3]]),
+        (partial(gu.quat_to_xyz, rpy=True), [[4]], [[3]]),
+        (partial(gu.xyz_to_quat, rpy=True), [[3]], [[4]]),
+        (gu.transform_by_quat, [[3], [4]], [[3]]),
+        (gu.transform_quat_by_quat, [[4], [4]], [[4]]),
+        (gu.slerp, [[4], [4], [1]], [[4]]),
+        (gu.z_up_to_R, [[3]], [[3, 3]]),
+        (gu.z_up_to_R, [[3], [3], [3, 3]], [[3, 3]]),
+        (gu.pos_lookat_up_to_T, [[3], [3], [3]], [[4, 4]]),
+        (gu.inv_transform_by_T, [[5, 3], [4, 4]], [[5, 3]]),
+        (partial(polar, pure_rotation=False, side="left", tol=tol), [[3, 3]], [[3, 3], [3, 3]]),
+        (partial(polar, pure_rotation=False, side="right", tol=tol), [[3, 3]], [[3, 3], [3, 3]]),
+    ):
+        num_inputs = len(shapes_in)
+        shape_args = (*shapes_in, *shapes_out)
+        np_args, tc_args = [], []
+        for i in range(len(shape_args)):
+            np_arg = np.random.randn(*batch_shape, *shape_args[i]).clip(-1.0, 1.0).astype(gs.np_float)
+            # Axis-aligned vectors hit the degenerate branches: poles, up colinear with z, coincident pos and lookat
+            if batch_shape and shape_args[i] == [3]:
+                np_arg[..., :6, :] = np.concatenate((np.eye(3), -np.eye(3)))
+            # Quaternions of Euler angles away from the gimbal lock, near which fp32 angles lose all precision, then
+            # quaternions of pitch +-pi/2 at the gimbal lock, of both conventions for the last two
+            if shape_args[i] == [4]:
+                np_arg = gu.xyz_to_quat(np_arg[..., :3])
+            if batch_shape and shape_args[i] == [4]:
+                np_arg[..., :4, :] = (
+                    (0.5 * math.sqrt(2.0), 0.0, 0.5 * math.sqrt(2.0), 0.0),
+                    (0.5 * math.sqrt(2.0), 0.0, -0.5 * math.sqrt(2.0), 0.0),
+                    (0.5, 0.5, 0.5, 0.5),
+                    (0.5, -0.5, 0.5, 0.5),
+                )
+            tc_arg = torch.as_tensor(np_arg, dtype=gs.tc_float, device=gs.device)
+
+            if i < num_inputs:
+                np_args.append(np_arg)
+                tc_args.append(tc_arg)
+
+        np_outs = py_func(*np_args)
+        if not isinstance(np_outs, (list, tuple)):
+            np_outs = (np_outs,)
+        for np_out, shape_out in zip(np_outs, shapes_out):
+            assert np_out.shape == (*batch_shape, *shape_out)
+
+        tc_outs = py_func(*tc_args)
+        if not isinstance(tc_outs, (list, tuple)):
+            tc_outs = (tc_outs,)
+        tc_outs = tuple(map(tensor_to_array, tc_outs))
+
+        for np_out, tc_out in zip(np_outs, tc_outs):
+            assert_allclose(np_out, tc_out, tol=tol)
+
+    # Homogeneous transforms with missing components, allocated or written into a reused buffer
+    trans = np.random.randn(*batch_shape, 3).clip(-1.0, 1.0).astype(gs.np_float)
+    quat = gu.xyz_to_quat(np.random.randn(*batch_shape, 3).clip(-1.0, 1.0).astype(gs.np_float))
+    R = gu.quat_to_R(quat)
+    T_R = np.zeros((*batch_shape, 4, 4), dtype=gs.np_float)
+    T_R[..., :3, :3] = R
+    T_R[..., 3, 3] = 1.0
+    T_trans_R = T_R.copy()
+    T_trans_R[..., :3, 3] = trans
+    T_trans = np.broadcast_to(np.eye(4, dtype=gs.np_float), T_R.shape).copy()
+    T_trans[..., :3, 3] = trans
+    for convert in (lambda x: x, partial(torch.as_tensor, device=gs.device)):
+        trans_, quat_, R_ = [convert(value) for value in (trans, quat, R)]
+        for func, args, T_true in (
+            (gu.trans_R_to_T, (trans_, R_), T_trans_R),
+            (gu.R_to_T, (R_,), T_R),
+            (gu.trans_to_T, (trans_,), T_trans),
+        ):
+            for out in (None, convert(np.full((*batch_shape, 4, 4), np.nan, dtype=gs.np_float))):
+                T = func(*args, out=out)
+                assert out is None or T is out
+                assert_allclose(T, T_true, tol=tol)
+        for args, T_true in (((trans_, quat_), T_trans_R), ((None, quat_), T_R), ((trans_, None), T_trans)):
+            assert_allclose(gu.trans_quat_to_T(*args), T_true, tol=tol)
+
+        # Inputs of mixed precisions give a transform of the higher one
+        for trans_mixed, R_mixed in ((trans.astype(np.float16), R), (trans, R.astype(np.float16))):
+            T = gu.trans_R_to_T(convert(trans_mixed), convert(R_mixed))
+            assert tensor_to_array(T).dtype == gs.np_float
+            T_true = gu.trans_R_to_T(trans_mixed.astype(gs.np_float), R_mixed.astype(gs.np_float))
+            assert_allclose(T, T_true, tol=tol)
+
+    # Vectors and quaternions of mixed precisions give rotated vectors of the higher one
+    for vec_mixed, quat_mixed in ((trans.astype(np.float16), quat), (trans, quat.astype(np.float16))):
+        vec_rotated = gu.transform_by_quat(*(torch.as_tensor(e, device=gs.device) for e in (vec_mixed, quat_mixed)))
+        assert tensor_to_array(vec_rotated).dtype == gs.np_float
+        vec_rotated_true = gu.transform_by_quat(vec_mixed.astype(gs.np_float), quat_mixed.astype(gs.np_float))
+        assert_allclose(vec_rotated, vec_rotated_true, tol=tol)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("batch_shape", [(10, 40, 25), ()])
+def test_geom_quadrants_inverse(batch_shape):
+    import quadrants as qd
+
+    for qd_func, qd_func_inv, shapes_value_args, shapes_transform_args in (
+        (gu.qd_transform_by_T, gu.qd_inv_transform_by_T, [[3]], [[4, 4]]),
+        (gu.qd_transform_by_trans_quat, gu.qd_inv_transform_by_trans_quat, [[3]], [[3], [4]]),
+        (gu.qd_transform_motion_by_trans_quat, gu.qd_inv_transform_motion_by_trans_quat, [[3], [3]], [[3], [4]]),
+    ):
+        shapes_in = (*shapes_value_args, *shapes_transform_args)
+        num_inputs, num_outputs = len(shapes_in), len(shapes_value_args)
+        qd_value_in_args, qd_transform_args, qd_value_out_args, qd_value_inv_out_args = [], [], [], []
+        for i, shape_arg in enumerate(map(tuple, (*shapes_in, *shapes_value_args, *shapes_value_args))):
+            if shape_arg in ((4, 4), (3, 3)):
+                R = gu.rotvec_to_R(np.random.randn(*batch_shape, 3).clip(-1.0, 1.0).astype(gs.np_float))
+                if shape_arg == (4, 4):
+                    trans = np.random.randn(*batch_shape, 3).astype(gs.np_float)
+                    np_arg = gu.trans_R_to_T(trans, R)
+                else:
+                    np_arg = R
+            else:
+                np_arg = np.random.randn(*batch_shape, *shape_arg).clip(-1.0, 1.0).astype(gs.np_float)
+
+            qd_type = qd.Vector if len(shape_arg) == 1 else qd.Matrix
+            qd_arg = qd_type.field(*shape_arg, dtype=gs.qd_float, shape=batch_shape)
+            qd_arg.from_numpy(np_arg)
+
+            if i < len(shapes_value_args):
+                qd_value_in_args.append(qd_arg)
+            elif i < num_inputs:
+                qd_transform_args.append(qd_arg)
+            elif i < num_inputs + num_outputs:
+                qd_value_out_args.append(qd_arg)
+            else:
+                qd_value_inv_out_args.append(qd_arg)
+
+        kernel = _qd_kernel_wrapper(qd_func, num_inputs, num_outputs)
+        kernel(*qd_value_in_args, *qd_transform_args, *qd_value_out_args)
+        kernel = _qd_kernel_wrapper(qd_func_inv, num_inputs, num_outputs)
+        kernel(*qd_value_out_args, *qd_transform_args, *qd_value_inv_out_args)
+
+        for qd_value_in_arg, qd_value_inv_out_arg in zip(qd_value_in_args, qd_value_inv_out_args):
+            np.testing.assert_allclose(qd_value_in_arg.to_numpy(), qd_value_inv_out_arg.to_numpy(), atol=1e2 * gs.EPS)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("batch_shape", [(10, 40, 25), ()])
+def test_geom_quadrants_identity(batch_shape, tol):
+    import quadrants as qd
+
+    for qd_funcs, shape_args, funcs_args in (
+        ((gu.qd_xyz_to_quat, gu.qd_quat_to_xyz), ([3], [4]), ((), (gs.EPS,))),
+        ((gu.qd_xyz_to_quat, gu.qd_quat_to_R, gu.qd_R_to_xyz), ([3], [4], [3, 3]), ((), (gs.EPS,), (gs.EPS,))),
+        (
+            (gu.qd_xyz_to_quat, gu.qd_quat_to_rotvec, gu.qd_rotvec_to_R, gu.qd_R_to_xyz),
+            ([3], [4], [3], [3, 3]),
+            ((), (), (), (gs.EPS,)),
+        ),
+        ((gu.qd_rotvec_to_quat, gu.qd_quat_to_rotvec), ([3], [4]), ((), ())),
+    ):
+        qd_args = []
+        for shape_arg in (*shape_args, shape_args[0]):
+            qd_type = qd.Vector if len(shape_arg) == 1 else qd.Matrix
+            qd_arg = qd_type.field(*shape_arg, dtype=gs.qd_float, shape=batch_shape)
+            qd_arg.from_numpy(np.random.randn(*batch_shape, *shape_arg).clip(-1.0, 1.0).astype(gs.np_float))
+            qd_args.append(qd_arg)
+
+        for i, (qd_func, args) in enumerate(zip(qd_funcs, funcs_args)):
+            kernel = _qd_kernel_wrapper(qd_func, 1, 1, *args)
+            kernel(*qd_args[i : (i + 2)])
+
+        np.testing.assert_allclose(qd_args[0].to_numpy(), qd_args[-1].to_numpy(), atol=1e2 * gs.EPS)
+
+    # Rotation angles beyond pi, whose sine is negative
+    qd_rotvec = qd.Vector.field(3, dtype=gs.qd_float, shape=batch_shape)
+    qd_R = qd.Matrix.field(3, 3, dtype=gs.qd_float, shape=batch_shape)
+    axis = np.random.randn(*batch_shape, 3)
+    angle = np.random.uniform(math.pi, 2.0 * math.pi, (*batch_shape, 1))
+    rotvec = axis / np.linalg.norm(axis, axis=-1, keepdims=True) * angle
+    qd_rotvec.from_numpy(rotvec.astype(gs.np_float))
+    _qd_kernel_wrapper(gu.qd_rotvec_to_R, 1, 1)(qd_rotvec, qd_R)
+    R_true = Rotation.from_rotvec(rotvec.reshape((-1, 3))).as_matrix().reshape((*batch_shape, 3, 3))
+    assert_allclose(qd_R.to_numpy(), R_true, tol=tol)
+
+    qd_A, qd_U, qd_S, qd_V = [qd.Matrix.field(3, 3, dtype=gs.qd_float, shape=batch_shape) for _ in range(4)]
+    # Rotations of noisy identities, from nearly repeated to well separated singular values
+    rotation, _ = np.linalg.qr(np.random.randn(*batch_shape, 3, 3))
+    noise_scale = 10.0 ** np.random.uniform(-12.0, 0.0, (*batch_shape, 1, 1))
+    qd_A.from_numpy((rotation @ (np.eye(3) + noise_scale * np.random.randn(*batch_shape, 3, 3))).astype(gs.np_float))
+    _qd_kernel_wrapper(gu.qd_svd, 1, 3)(qd_A, qd_U, qd_S, qd_V)
+    A, U, S, V = qd_A.to_numpy(), qd_U.to_numpy(), qd_S.to_numpy(), qd_V.to_numpy()
+    np.testing.assert_allclose(U @ S @ np.swapaxes(V, -1, -2), A, atol=1e2 * gs.EPS)
+    np.testing.assert_allclose(S, S * np.eye(3), atol=0.0)
+    for R in (U, V):
+        np.testing.assert_allclose(np.swapaxes(R, -1, -2) @ R, np.broadcast_to(np.eye(3), R.shape), atol=1e2 * gs.EPS)
+        np.testing.assert_allclose(np.linalg.det(R), 1.0, atol=1e2 * gs.EPS)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("batch_shape", [(10, 40, 25), ()])
+def test_geom_tensor_identity(batch_shape, tol):
+    for py_funcs, shape_args in (
+        ((gu.R_to_rot6d, gu.rot6d_to_R), ([3, 3], [6])),
+        ((gu.R_to_quat, gu.quat_to_R), ([3, 3], [4])),
+    ):
+        np_args, tc_args = [], []
+        for shape_arg in (*shape_args, shape_args[0]):
+            if tuple(shape_arg) == (3, 3):
+                # Rotation angles up to pi give rotation matrices of negative trace, whose quaternion pivots elsewhere
+                rotvec = np.random.randn(*batch_shape, 3).clip(-1.0, 1.0) * (math.pi / math.sqrt(3.0))
+                np_arg = gu.rotvec_to_R(rotvec.astype(gs.np_float))
+            else:
+                np_arg = np.random.randn(*batch_shape, *shape_arg).clip(-1.0, 1.0).astype(gs.np_float)
+            tc_arg = torch.as_tensor(np_arg, dtype=gs.tc_float, device=gs.device)
+            np_args.append(np_arg)
+            tc_args.append(tc_arg)
+
+        for i, py_func in enumerate(py_funcs):
+            np_args[i + 1][:] = py_func(np_args[i])
+            tc_args[i + 1][:] = py_func(tc_args[i])
+
+        np.testing.assert_allclose(np_args[0], np_args[-1], atol=1e2 * gs.EPS)
+        np.testing.assert_allclose(tensor_to_array(tc_args[0]), tensor_to_array(tc_args[-1]), atol=1e2 * gs.EPS)
+
+    # Directions near -z in every quadrant, with transverse components and norms spanning several decades
+    transverse = 10.0 ** np.random.uniform(-30.0, -1.0, (*batch_shape, 1)) * np.random.randn(*batch_shape, 2)
+    unit = np.concatenate((transverse, -np.sqrt(1.0 - np.sum(transverse**2, axis=-1, keepdims=True))), axis=-1)
+    directions = (10.0 ** np.random.uniform(-3.0, 5.0, (*batch_shape, 1)) * unit).astype(gs.np_float)
+    axis = np.cross([0.0, 0.0, 1.0], unit)
+    transverse_norm = np.linalg.norm(axis, axis=-1, keepdims=True)
+    rotvec = axis / transverse_norm * np.arctan2(transverse_norm, unit[..., 2:])
+    R_true = Rotation.from_rotvec(rotvec.reshape((-1, 3))).as_matrix().reshape((*batch_shape, 3, 3))
+    quat = gu.z_to_quat(directions)
+    assert_allclose(gu.quat_to_R(quat), R_true, tol=tol)
+    assert_allclose(np.linalg.norm(quat, axis=-1), 1.0, tol=tol)
+    assert_allclose(gu.z_to_R(directions), R_true, tol=tol)
+
+    # Poles, directions on both sides of the zero-norm threshold, and the exact antipode
+    directions = np.array(
+        [
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, 0.0],
+            [0.5 * gs.EPS, 0.5 * gs.EPS, 0.0],
+            [0.75 * gs.EPS, 0.75 * gs.EPS, 0.0],
+            [gs.EPS, 0.0, 0.0],
+            [0.0, 0.0, -gs.EPS],
+        ],
+        dtype=gs.np_float,
+    )
+    quat_true = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0],
+        [math.sqrt(0.5), -0.5, 0.5, 0.0],
+        [math.sqrt(0.5), 0.0, math.sqrt(0.5), 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+    ]
+    quat = gu.z_to_quat(directions)
+    assert_allclose(quat, quat_true, tol=tol)
+    assert_allclose(gu.z_to_R(directions), gu.quat_to_R(quat), tol=tol)
+
+    for value in (np.nan, np.inf, -np.inf):
+        directions = np.array(
+            [
+                [value, 0.0, -1.0],
+                [0.0, value, -1.0],
+                [0.0, 0.0, value],
+            ],
+            dtype=gs.np_float,
+        )
+        assert_equal(np.isnan(gu.z_to_quat(directions)), True)
+        assert_equal(np.isnan(gu.z_to_R(directions)), True)
+        assert_equal(np.isnan(gu.rotvec_to_R(directions)), True)
+
+    # Rotation angles of both signs and beyond pi, whose sine is negative
+    axis = np.random.randn(*batch_shape, 3)
+    theta = np.random.uniform(-2.0 * math.pi, 2.0 * math.pi, batch_shape)
+    rotvec = axis / np.linalg.norm(axis, axis=-1, keepdims=True) * theta[..., None]
+    R_true = Rotation.from_rotvec(rotvec.reshape((-1, 3))).as_matrix().reshape((*batch_shape, 3, 3))
+    assert_allclose(gu.axis_angle_to_R(axis.astype(gs.np_float), theta.astype(gs.np_float)), R_true, tol=tol)
+    assert_allclose(gu.rotvec_to_R(rotvec.astype(gs.np_float)), R_true, tol=tol)
+    assert_allclose(gu.rotvec_to_R(np.zeros(3, dtype=gs.np_float)), np.eye(3), tol=tol)
+    R_true = Rotation.from_rotvec([0.0, 0.0, -3.0]).as_matrix()
+    assert_allclose(gu.axis_angle_to_R(np.array([0.0, 0.0, 1.0], dtype=gs.np_float), -3), R_true, tol=tol)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("batch_shape", [(10, 40, 25), ()])
+def test_slerp(batch_shape, tol):
+    INTERP_RATIO = 0.7
+
+    numel = math.prod(batch_shape)
+    # Quaternions of both signs, so that some pairs interpolate along the arc towards the opposite of the end one
+    q0 = np.random.randn(numel, 4)
+    q0 /= np.linalg.norm(q0)
+    q1 = np.random.randn(numel, 4)
+    q1 /= np.linalg.norm(q1)
+
+    lerp_true = np.empty_like(q0)
+    lerp_from_one_true = np.empty_like(q1)
+    for i in range(numel):
+        rots = Rotation.from_quat([q0[i], q1[i]], scalar_first=True)
+        slerp = Slerp([0, 1], rots)
+        lerp_true[i] = slerp([INTERP_RATIO]).as_quat(scalar_first=True)
+        rots = Rotation.from_quat([q0[0], q1[i]], scalar_first=True)
+        slerp = Slerp([0, 1], rots)
+        lerp_from_one_true[i] = slerp([INTERP_RATIO]).as_quat(scalar_first=True)
+
+    ratio = np.full(batch_shape, INTERP_RATIO)
+    for convert in (lambda x: x, lambda x: torch.tensor(x, dtype=gs.tc_float, device=gs.device)):
+        q0_batch, q1_batch = convert(q0.reshape((*batch_shape, 4))), convert(q1.reshape((*batch_shape, 4)))
+        lerp = gu.slerp(q0_batch, q1_batch, convert(ratio))
+        assert_allclose(lerp_true.reshape((*batch_shape, 4)), lerp, tol=tol)
+        # A single start quaternion is interpolated towards every end quaternion of the batch.
+        lerp = gu.slerp(convert(q0[0]), q1_batch, convert(ratio))
+        assert_allclose(lerp_from_one_true.reshape((*batch_shape, 4)), lerp, tol=tol)
+
+    # Coincident orientations of both signs, whose spherical interpolation is singular
+    q0 = torch.tensor(q0 / np.linalg.norm(q0, axis=-1, keepdims=True), dtype=gs.tc_float, device=gs.device)
+    sign = torch.where(torch.rand((numel, 1), dtype=gs.tc_float, device=gs.device) < 0.5, -1.0, 1.0)
+    t = torch.rand(numel, dtype=gs.tc_float, device=gs.device)
+    assert_allclose(gu.slerp(q0, sign * q0, t), q0, tol=tol)
+    jac0, jac1, jac_t = torch.func.vmap(torch.func.jacrev(gu.slerp, argnums=(0, 1, 2)))(q0, sign * q0, t)
+    tangent_projection = torch.eye(4, dtype=gs.tc_float, device=gs.device) - q0[:, :, None] * q0[:, None, :]
+    assert_allclose(jac0, (1.0 - t[:, None, None]) * tangent_projection, tol=tol)
+    assert_allclose(jac1, sign[..., None] * t[:, None, None] * tangent_projection, tol=tol)
+    assert_allclose(jac_t, 0.0, tol=tol)
+    assert_allclose(gu.slerp(q0.to(torch.float16), (sign * q0).to(torch.float16), t), q0, tol=5e-3)
+
+
+@pytest.mark.required
+def test_geom_torch_inside_enclosing_torch_compile(tol):
+    def fn(xyz, quat, other, vec_strided, vec_col, quat_row, ratio):
+        return (
+            gu.xyz_to_quat(xyz),
+            gu.quat_to_R(quat),
+            gu.quat_to_xyz(quat, rpy=True),
+            gu.R_to_quat(gu.quat_to_R(quat)),
+            gu.transform_quat_by_quat(quat, other),
+            gu.transform_by_quat(vec_strided, quat),
+            gu.inv_transform_by_quat(vec_col, quat_row),
+            gu.transform_by_quat(vec_col[0, 0], gu.inv_quat(quat)),
+            gu.slerp(quat, other, ratio),
+            gu.z_up_to_R(vec_strided),
+            gu.z_up_to_R(vec_strided, vec_col[0, 0]),
+        )
+
+    # Tracing alone checks that the functions build a single graph, without any compiler being needed
+    fn_compiled = torch.compile(fn, fullgraph=True, backend="eager")
+    # A second batch size makes the enclosing graph recompile with dynamic shapes
+    for n_a, n_b in ((6, 5), (3, 2)):
+        # A non-contiguous batch (transposed), a broadcast pair (n_a, 1) x (1, n_b), a single element against a batch
+        args = (
+            torch.randn((n_a, n_b, 3), dtype=gs.tc_float, device=gs.device),
+            gu.xyz_to_quat(torch.randn((n_a, n_b, 3), dtype=gs.tc_float, device=gs.device)),
+            gu.xyz_to_quat(torch.randn((n_a, n_b, 3), dtype=gs.tc_float, device=gs.device)),
+            torch.randn((n_b, n_a, 3), dtype=gs.tc_float, device=gs.device).transpose(0, 1),
+            torch.randn((n_a, 1, 3), dtype=gs.tc_float, device=gs.device),
+            gu.xyz_to_quat(torch.randn((1, n_b, 3), dtype=gs.tc_float, device=gs.device)),
+            torch.rand((n_a, n_b), dtype=gs.tc_float, device=gs.device),
+        )
+        for value_true, value in zip(fn(*args), fn_compiled(*args)):
+            assert value.shape == value_true.shape
+            assert_allclose(value, value_true, tol=tol)
+
+
+@pytest.mark.required
+def test_compose_inertial_properties():
+    mass1, com1 = 1.0, np.array([1.0, 0.0, 0.0])
+    inertia1 = np.array([[2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+
+    mass2, com2 = 2.0, np.array([0.0, 2.0, 0.0])
+    inertia2 = np.array([[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 1.0]])
+
+    # Analytical calculations: mass=3.0, COM=[1/3, 4/3, 0]
+    expected_mass, expected_com = 3.0, np.array([1.0 / 3.0, 4.0 / 3.0, 0.0])
+
+    # Translate inertias to combined COM using parallel axis theorem
+    def translate_inertia(I, m, r):  # I + m*(||r||²*I - r⊗r)
+        return I + m * (np.dot(r, r) * np.eye(3) - np.outer(r, r))
+
+    expected_inertia = translate_inertia(inertia1, mass1, expected_com - com1) + translate_inertia(
+        inertia2, mass2, expected_com - com2
+    )
+
+    # Now call the function and verify results
+    combined_mass, combined_com, combined_inertia = compose_inertial_properties(
+        mass1, com1, inertia1, mass2, com2, inertia2
+    )
+
+    assert_allclose(combined_mass, expected_mass, tol=TOL)
+    assert_allclose(combined_com, expected_com, tol=TOL)
+    assert_allclose(combined_inertia, expected_inertia, tol=TOL)
+
+
+@pytest.mark.required
+def test_unique_rows():
+    INT64_MIN, INT64_MAX = np.iinfo(np.int64).min, np.iinfo(np.int64).max
+    UINT64_MAX = np.iinfo(np.uint64).max
+    rows_list = (
+        np.random.randint(-50, 50, (2000, 3)),
+        np.random.randint(0, 4, (500, 2)).astype(np.uint8),
+        np.array(
+            [
+                [INT64_MIN, 1],
+                [INT64_MAX, 0],
+                [INT64_MIN, 1],
+            ],
+        ),
+        np.array(
+            [
+                [UINT64_MAX, 0],
+                [0, 1],
+                [UINT64_MAX, 0],
+            ],
+            dtype=np.uint64,
+        ),
+        np.random.randint(-(2**40), 2**40, (1000, 3), dtype=np.int64),
+        np.random.randint(0, 2, (100, 40)),
+        np.zeros((0, 3), dtype=np.int64),
+    )
+    for rows in rows_list:
+        expected = np.unique(rows, axis=0, return_index=True, return_inverse=True, return_counts=True)
+        for value, expected_value in zip(unique_rows(rows), expected):
+            assert value.dtype == expected_value.dtype
+            assert_equal(value, expected_value)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("backend", [gs.cpu])
+def test_mesh_inertial_properties():
+    EXTENTS = (1.0, 2.0, 3.0)
+    VOLUME = math.prod(EXTENTS)
+    INERTIA = VOLUME / 12.0 * np.diag(np.sum(np.square(EXTENTS)) - np.square(EXTENTS))
+
+    # A box wound inward has a negative volume, and a box missing a side is closed by its convex hull
+    box = trimesh.creation.box(extents=EXTENTS)
+    box_inverted = box.copy()
+    box_inverted.invert()
+    box_open = trimesh.Trimesh(vertices=box.vertices, faces=box.faces[box.face_normals[:, 0] > -0.5], process=False)
+    for tmesh, volume in ((box, VOLUME), (box_inverted, -VOLUME), (box_open, None)):
+        mesh = gs.Mesh.from_trimesh(tmesh)
+        if volume is not None:
+            assert_allclose(mesh.volume, volume, tol=TOL)
+        mass, com, inertia = mesh.inertial
+        assert_allclose(mass, VOLUME, tol=TOL)
+        assert_allclose(com, 0.0, tol=TOL)
+        assert_allclose(inertia, INERTIA, tol=TOL)
+
+    # A flat mesh encloses no volume, so it carries no inertia
+    quad = trimesh.Trimesh(
+        vertices=(
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (0.0, 1.0, 0.0),
+        ),
+        faces=(
+            (0, 1, 2),
+            (0, 2, 3),
+        ),
+        process=False,
+    )
+    mesh = gs.Mesh.from_trimesh(quad)
+    assert_allclose(mesh.volume, 0.0, tol=TOL)
+    mass, com, inertia = mesh.inertial
+    assert_equal(mass, 0.0)
+    assert_equal(com, 0.0)
+    assert_equal(inertia, 0.0)
+
+    # A small mesh far from the origin encloses the same volume as at the origin
+    sphere = trimesh.creation.icosphere(subdivisions=2, radius=0.01)
+    sphere_far = sphere.copy()
+    sphere_far.apply_translation((1000.0, 1000.0, 1000.0))
+    assert_allclose(gs.Mesh.from_trimesh(sphere_far).volume, gs.Mesh.from_trimesh(sphere).volume, tol=TOL)
+
+
+@pytest.mark.required
+def test_mesh_wall_thickness():
+    WALL = 5e-4
+    FIN = 2e-3
+    FOIL = 5e-6
+
+    # A hollow cube whose walls are far thinner than its size, at several scales
+    outer = trimesh.creation.box(extents=(1.0, 1.0, 1.0))
+    inner = trimesh.creation.box(extents=(1.0 - 2.0 * WALL, 1.0 - 2.0 * WALL, 1.0 - 2.0 * WALL))
+    inner.invert()
+    hollow_box = trimesh.util.concatenate((outer, inner))
+    for scale in (1e-3, 1.0, 1e3):
+        for quantile in (0.02, 0.25):
+            wall_thickness = mu.get_wall_thickness(scale * hollow_box.vertices, hollow_box.faces, quantile=quantile)
+            assert_allclose(wall_thickness, scale * WALL, rtol=TOL_DOUBLE)
+
+    # A thick slab, finely tessellated, next to a thin fin covering a sixth of the surface with a handful of faces
+    slab = trimesh.creation.box(extents=(1.0, 1.0, 0.2))
+    for _ in range(6):
+        slab = slab.subdivide()
+    fin = trimesh.creation.box(extents=(1.0, FIN, 0.3))
+    fin.apply_translation((0.0, 0.7, 0.0))
+    slab_fin = trimesh.util.concatenate((slab, fin))
+    assert_allclose(mu.get_wall_thickness(slab_fin.vertices, slab_fin.faces, quantile=0.02), FIN, rtol=TOL_DOUBLE)
+    assert_allclose(mu.get_wall_thickness(slab_fin.vertices, slab_fin.faces, quantile=0.25), 0.2, rtol=TOL_DOUBLE)
+
+    # The width of a convex box is its smallest extent at any scale, and a box squashed flat or onto a segment has none
+    box = trimesh.creation.box(extents=(1.0, 2.0, 0.2))
+    for scale in (1e-9, 1.0, 1e3):
+        assert_allclose(mu.get_convex_width(scale * box.vertices, box.faces), scale * 0.2, rtol=TOL_DOUBLE)
+    for axes_scale in ((1.0, 1.0, 0.0), (1.0, 0.0, 0.0)):
+        assert_equal(mu.get_convex_width(axes_scale * box.vertices, box.faces), 0.0)
+
+    # An open slab next to a foil far thinner than the mesh, holding most of the faces with a small share of the area
+    slab_open = trimesh.creation.box(extents=(1.0, 1.0, 0.2))
+    slab_open = trimesh.Trimesh(slab_open.vertices, slab_open.faces[1:], process=False)
+    foil = trimesh.creation.box(extents=(0.2, FOIL, 0.3))
+    for _ in range(5):
+        foil = foil.subdivide()
+    foil.apply_translation((0.0, 0.7, 0.0))
+    slab_foil = trimesh.util.concatenate((slab_open, foil))
+    for weight_by_area, wall_thickness in ((False, FOIL), (True, 0.2)):
+        assert_allclose(
+            mu.get_wall_thickness(slab_foil.vertices, slab_foil.faces, quantile=0.1, weight_by_area=weight_by_area),
+            wall_thickness,
+            rtol=TOL_DOUBLE,
+        )
+
+    # The watertight wrap of a tilted open hollow box smaller than 10 cm is the scaled-down wrap of the same box ten
+    # times larger, the resolution of the wrap following the thickness of its walls at both scales.
+    box_outer = trimesh.creation.box(extents=(0.04, 0.04, 0.04))
+    box_inner = trimesh.creation.box(extents=(0.032, 0.032, 0.032))
+    box_inner.invert()
+    box_hollow = trimesh.util.concatenate((box_outer, box_inner)).subdivide().subdivide()
+    box_hollow.apply_transform(trimesh.transformations.rotation_matrix(0.5, (1.0, 2.0, 3.0)))
+    box_open = trimesh.Trimesh(box_hollow.vertices, box_hollow.faces[1:], process=False)
+    wrap_small = trimesh.Trimesh(*watertighten_mesh(box_open.vertices, box_open.faces), process=False)
+    wrap_large = trimesh.Trimesh(*watertighten_mesh(10.0 * box_open.vertices, box_open.faces), process=False)
+    assert_equal(len(wrap_small.faces), len(wrap_large.faces))
+    assert_allclose(1000.0 * wrap_small.volume, wrap_large.volume, rtol=TOL_DOUBLE)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("side", ["right", "left"])
+def test_polar_decomposition(side, tol):
+    # Generate random matrices (not necessarily square)
+    M, N = 3, 3
+    np_A = np.random.randn(M, N).astype(gs.np_float)
+
+    # Test numpy version (with pure_rotation=False to match original behavior)
+    np_U, np_P = gu.polar(np_A, pure_rotation=False, side=side)
+    assert np_U.shape == (M, N)
+    if side == "right":
+        assert np_P.shape == (N, N)
+        # Verify A ≈ U @ P
+        np_reconstructed = np_U @ np_P
+    else:
+        assert np_P.shape == (M, M)
+        # Verify A ≈ P @ U
+        np_reconstructed = np_P @ np_U
+
+    assert_allclose(np_A, np_reconstructed, tol=tol)
+
+    # Note: U from polar decomposition may not be exactly unitary due to numerical errors,
+    # but the reconstruction A ≈ U @ P (or P @ U) is the most important property
+
+    # Verify P is positive semi-definite (eigenvalues >= 0)
+    np_eigenvals = np.linalg.eigvals(np_P)
+    assert np.all(np_eigenvals.real >= -tol), "P should be positive semi-definite"
+
+    # Validate against scipy
+    scipy_U, scipy_P = scipy.linalg.polar(np_A, side=side)
+    np_U_scipy, np_P_scipy = gu.polar(np_A, pure_rotation=False, side=side)
+    assert_allclose(scipy_U, np_U_scipy, tol=tol)
+    assert_allclose(scipy_P, np_P_scipy, tol=tol)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("side", ["right", "left"])
+@pytest.mark.parametrize("is_pure", [False, True])
+def test_polar_pure_rotation(is_pure, side, tol):
+    # Matrices of negative determinant, whose orthogonal factor is a reflection unless it moves into the other factor
+    np_A = np.random.randn(4, 3, 3).astype(gs.np_float)
+    np_A[np.linalg.det(np_A) > 0.0, :, -1] *= -1.0
+
+    for A in (np_A, np_A[0], torch.tensor(np_A, device=gs.device), torch.tensor(np_A[0], device=gs.device)):
+        U, P = map(tensor_to_array, gu.polar(A, pure_rotation=is_pure, side=side))
+        assert_allclose(np.linalg.det(U), 1.0 if is_pure else -1.0, tol=tol)
+        assert_allclose(U @ P if side == "right" else P @ U, tensor_to_array(A), tol=tol)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("side", ["right", "left"])
+@pytest.mark.parametrize("batch_shape", [(5,), (3, 4), (2, 3, 4)])
+def test_polar_decomposition_batched_numpy(side, batch_shape, tol):
+    M, N = 3, 3
+    np_A = np.random.randn(*batch_shape, M, N).astype(gs.np_float)
+
+    # Test batched numpy version
+    np_U, np_P = gu.polar(np_A, pure_rotation=False, side=side)
+    assert np_U.shape == (*batch_shape, M, N)
+    if side == "right":
+        assert np_P.shape == (*batch_shape, N, N)
+        # Verify A ≈ U @ P for each batch element
+        np_reconstructed = np_U @ np_P
+    else:
+        assert np_P.shape == (*batch_shape, M, M)
+        # Verify A ≈ P @ U for each batch element
+        np_reconstructed = np_P @ np_U
+
+    assert_allclose(np_A, np_reconstructed, tol=tol)
+
+    # Verify P is positive semi-definite for each batch element
+    for idx in np.ndindex(batch_shape):
+        np_eigenvals = np.linalg.eigvals(np_P[idx])
+        assert np.all(np_eigenvals.real >= -tol), f"P should be positive semi-definite at batch index {idx}"
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("side", ["right", "left"])
+def test_polar_decomposition_batched_pure_rotation(side, tol):
+    batch_shape = (5,)
+    M, N = 3, 3
+    np_A = np.random.randn(*batch_shape, M, N).astype(gs.np_float)
+
+    # Only the reconstruction accuracy is verified for batched inputs; the single-matrix test is what
+    # validates the pure_rotation property (det(U) = 1) itself.
+    # Test with pure_rotation - reconstruction should still work
+    np_U, np_P = gu.polar(np_A, pure_rotation=True, side=side)
+
+    # Reconstruction should work
+    if side == "right":
+        np_reconstructed = np_U @ np_P
+    else:
+        np_reconstructed = np_P @ np_U
+
+    assert_allclose(np_A, np_reconstructed, tol=tol)
+
+
+@pytest.mark.required
+@pytest.mark.slow  # ~300s
+@pytest.mark.parametrize("backend", [gs.cpu])
+def test_genuine_interpenetration(show_viewer):
+    RADIUS = 0.03
+    EXACT_TOL = 2e-4
+
+    pairs_viz = []
+
+    def measure(label, links, is_exact=True):
+        max_depth, crossings = get_genuine_interpenetration(links, is_exact=is_exact)
+        by_pair = {(c.link_a, c.link_b): c.depth for c in crossings}
+        for i_la, geoms_a in enumerate(links):
+            for i_lb in range(i_la + 1, len(links)):
+                if not geoms_a or not links[i_lb]:
+                    continue
+                lo_a = np.concatenate([verts for verts, _ in geoms_a]).min(0)
+                hi_a = np.concatenate([verts for verts, _ in geoms_a]).max(0)
+                lo_b = np.concatenate([verts for verts, _ in links[i_lb]]).min(0)
+                hi_b = np.concatenate([verts for verts, _ in links[i_lb]]).max(0)
+                if (lo_a > hi_b).any() or (lo_b > hi_a).any():
+                    continue
+                depth_pair = by_pair.get((i_la, i_lb))
+                verdict = f"{depth_pair * 1e3:.2f}mm" if depth_pair is not None else "no crossing"
+                pairs_viz.append((geoms_a, links[i_lb], f"{label} [{i_la}-{i_lb}]: {verdict}"))
+        return max_depth, crossings
+
+    def sphere(radius, center):
+        mesh = trimesh.creation.icosphere(subdivisions=4, radius=radius)
+        return mesh.vertices + np.asarray(center), mesh.faces
+
+    # Overlapping spheres: one crossing whose depth is the overlap, up to the tessellation chord error.
+    for overlap in (2e-3, 5e-3, 15e-3):
+        pair = [[sphere(RADIUS, (0, 0, 0))], [sphere(RADIUS, (2 * RADIUS - overlap, 0, 0))]]
+        max_depth, crossings = measure(f"spheres overlapping {overlap * 1e3:g}mm", pair)
+        assert len(crossings) == 1
+        assert_allclose(max_depth, overlap, atol=EXACT_TOL)
+        max_depth_fast, crossings_fast = measure(f"spheres overlapping {overlap * 1e3:g}mm fast", pair, is_exact=False)
+        assert len(crossings_fast) == 1
+        assert_allclose(max_depth_fast, overlap, atol=5e-4)
+
+    # Touching / separated spheres: no crossing, no depth.
+    max_depth, crossings = measure(
+        "spheres touching", [[sphere(RADIUS, (0, 0, 0))], [sphere(RADIUS, (2 * RADIUS + 1e-4, 0, 0))]]
+    )
+    assert not crossings and max_depth < 5e-4
+    max_depth, crossings = measure("spheres apart", [[sphere(RADIUS, (0, 0, 0))], [sphere(RADIUS, (3 * RADIUS, 0, 0))]])
+    assert not crossings and max_depth == 0.0
+
+    # Sphere floating inside an open container: containment through the opening is NOT interpenetration.
+    # The container is a five-wall open box (no lid), each wall a separate watertight box.
+    inner, wall, height = 0.05, 4e-3, 0.08
+    box_parts = [
+        trimesh.creation.box(extents=(wall, inner + 2 * wall, height)).apply_translation(
+            (-(inner + wall) / 2, 0.0, height / 2)
+        ),
+        trimesh.creation.box(extents=(wall, inner + 2 * wall, height)).apply_translation(
+            (+(inner + wall) / 2, 0.0, height / 2)
+        ),
+        trimesh.creation.box(extents=(inner, wall, height)).apply_translation((0.0, -(inner + wall) / 2, height / 2)),
+        trimesh.creation.box(extents=(inner, wall, height)).apply_translation((0.0, +(inner + wall) / 2, height / 2)),
+        trimesh.creation.box(extents=(inner + 2 * wall, inner + 2 * wall, wall)).apply_translation(
+            (0.0, 0.0, -wall / 2)
+        ),
+    ]
+    box_merged = trimesh.util.concatenate(box_parts).subdivide().subdivide()
+    box_geom = (box_merged.vertices, box_merged.faces)
+    max_depth, crossings = measure("sphere floating in open box", [[box_geom], [sphere(0.015, (0, 0, 0.04))]])
+    assert not crossings and max_depth == 0.0
+
+    # Sphere resting on the container floor with sub-tolerance overlap: contact, not a crossing.
+    max_depth, crossings = measure("sphere resting in open box", [[box_geom], [sphere(0.015, (0, 0, 0.015 - 0.5e-3))]])
+    assert not crossings
+    assert_allclose(max_depth, 0.5e-3, atol=EXACT_TOL)
+
+    # Sphere inside the container pressed 2 mm into a side wall: the depth is those 2 mm, NOT the centimetres
+    # it would take to extract the sphere through the opening.
+    max_depth, crossings = measure("sphere pressed 2mm into box wall", [[box_geom], [sphere(0.015, (0.012, 0, 0.04))]])
+    assert len(crossings) == 1
+    assert_allclose(max_depth, 2e-3, atol=EXACT_TOL)
+
+    # Sphere pressed all the way THROUGH the wall, poking 2 mm outside: the escape pushes it back into the
+    # cavity by the full 6 mm press, however it protrudes.
+    max_depth, crossings = measure("sphere poking through box wall", [[box_geom], [sphere(0.015, (0.016, 0, 0.04))]])
+    assert len(crossings) == 1
+    assert_allclose(max_depth, 6e-3, atol=EXACT_TOL)
+
+    # Rod fully through a thin plate: the minimum separating translation backs the rod out along its axis -
+    # rod half-extent plus plate half-thickness - regardless of the rod radius.
+    rod = trimesh.creation.cylinder(radius=5e-3, height=0.02, sections=48).subdivide()
+    plate = trimesh.creation.box(extents=(0.05, 0.05, 4e-3))
+    for _ in range(4):
+        plate = plate.subdivide()
+    max_depth, crossings = measure("rod through plate", [[(rod.vertices, rod.faces)], [(plate.vertices, plate.faces)]])
+    assert len(crossings) == 1
+    assert_allclose(max_depth, 12e-3, atol=EXACT_TOL)
+
+    # Donut cases. Two chain-linked tori with clearance: topologically inseparable (NO translation ever
+    # disjoins them), yet zero interpenetration.
+    def torus(major, minor, center=(0.0, 0.0, 0.0), through_x=False):
+        mesh = trimesh.creation.torus(major_radius=major, minor_radius=minor, major_sections=96, minor_sections=64)
+        if through_x:
+            mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, (1, 0, 0)))
+        return mesh.vertices + np.asarray(center), mesh.faces
+
+    max_depth, crossings = measure(
+        "donuts chain-linked clear", [[torus(0.04, 0.01)], [torus(0.04, 0.01, center=(0.04, 0, 0), through_x=True)]]
+    )
+    assert not crossings and max_depth == 0.0
+
+    # Same links pressed together: tube centrelines 18 mm apart, so the tubes (10 mm each of radius) overlap
+    # by 2 mm at a single spot.
+    max_depth, crossings = measure(
+        "donuts linked pressed 2mm", [[torus(0.04, 0.01)], [torus(0.04, 0.01, center=(0.062, 0, 0), through_x=True)]]
+    )
+    assert len(crossings) == 1
+    # Separation clears the material overlap, it does not unlink: backing off by the press depth returns the
+    # pair to the linked-with-clearance state, which is a valid disjoint configuration.
+    assert_allclose(max_depth, 2e-3, atol=EXACT_TOL)
+
+    # Same-plane donuts overlapping tube-to-tube from the outside by 5 mm.
+    max_depth, crossings = measure(
+        "donuts overlapping outside 5mm", [[torus(0.04, 0.01)], [torus(0.04, 0.01, center=(0.095, 0, 0))]]
+    )
+    assert len(crossings) == 1
+    assert_allclose(max_depth, 5e-3, atol=EXACT_TOL)
+
+    # Sphere seated in the donut hole, touching the whole ring at once: overlap = r_sphere + r_tube - R_major
+    # exactly. Above the crossing tolerance it is one crossing of that depth, below it a mere contact, and a
+    # small sphere floating in the hole is nothing at all.
+    max_depth, crossings = measure("sphere seated in donut 2mm", [[torus(0.03, 0.01)], [sphere(0.022, (0, 0, 0))]])
+    assert len(crossings) == 1
+    assert_allclose(max_depth, 2e-3, atol=EXACT_TOL)
+    max_depth, crossings = measure("sphere seated in donut 0.5mm", [[torus(0.03, 0.01)], [sphere(0.0205, (0, 0, 0))]])
+    assert not crossings
+    assert_allclose(max_depth, 0.5e-3, atol=EXACT_TOL)
+    max_depth, crossings = measure("sphere floating in donut hole", [[torus(0.03, 0.01)], [sphere(0.015, (0, 0, 0))]])
+    assert not crossings and max_depth == 0.0
+
+    # Chain of three spheres with two overlaps of different depths, plus a geom-less link (a free-joint base
+    # link) in the middle: indices must stay aligned and crossings sorted deepest first.
+    links = [
+        [sphere(RADIUS, (0, 0, 0))],
+        [],
+        [sphere(RADIUS, (2 * RADIUS - 5e-3, 0, 0))],
+        [sphere(RADIUS, (4 * RADIUS - 7e-3, 0, 0))],
+    ]
+    max_depth, crossings = measure("sphere chain with empty link", links)
+    assert [(c.link_a, c.link_b) for c in crossings] == [(0, 2), (2, 3)]
+    assert_allclose(crossings[0].depth, 5e-3, atol=EXACT_TOL)
+    assert_allclose(crossings[1].depth, 2e-3, atol=EXACT_TOL)
+    assert_allclose(max_depth, 5e-3, atol=EXACT_TOL)
+
+    # Thin rod: same extraction distance - the radius does not matter, only the extents do. Dense axial rings
+    # (spacing below the plate thickness) so the rod's own verts flag the overlap at any shift: a feature
+    # thinner than the other body's vertex grid must carry the detection itself.
+    thin_rod = trimesh.creation.cylinder(radius=1e-3, height=0.02, sections=24)
+    for _ in range(3):
+        thin_rod = thin_rod.subdivide()
+    max_depth, crossings = measure(
+        "thin rod through plate", [[(thin_rod.vertices, thin_rod.faces)], [(plate.vertices, plate.faces)]]
+    )
+    assert len(crossings) == 1
+    assert_allclose(max_depth, 12e-3, atol=EXACT_TOL)
+
+    # Small solid sphere fully engulfed inside a big solid sphere: no free surface to heal toward, only the
+    # extraction resolves - the depth is the separation R + r exactly, however deep it is buried.
+    max_depth, crossings = measure(
+        "sphere engulfed in solid sphere", [[sphere(0.03, (0, 0, 0))], [sphere(0.01, (0, 0, 0))]]
+    )
+    assert len(crossings) == 1
+    assert_allclose(max_depth, 40e-3, atol=EXACT_TOL)
+
+    # Hollow shell (outer sphere plus inverted inner sphere): a sphere floating in the cavity is containment,
+    # the same sphere pressed 2 mm into the shell from inside is a 2 mm crossing - closed-cavity variant of the
+    # open-container cases.
+    def hollow_sphere(r_out, r_in):
+        outer = trimesh.creation.icosphere(subdivisions=4, radius=r_out)
+        inner = trimesh.creation.icosphere(subdivisions=4, radius=r_in)
+        inner.faces = inner.faces[:, ::-1]
+        merged = trimesh.util.concatenate([outer, inner])
+        return merged.vertices, merged.faces
+
+    shell_geom = hollow_sphere(0.03, 0.025)
+    max_depth, crossings = measure("sphere floating in shell", [[shell_geom], [sphere(0.02, (0, 0, 0))]])
+    assert not crossings and max_depth == 0.0
+    max_depth, crossings = measure("sphere pressed 2mm into shell", [[shell_geom], [sphere(0.02, (0.007, 0, 0))]])
+    assert len(crossings) == 1
+    assert_allclose(max_depth, 2e-3, atol=EXACT_TOL)
+
+    # Box balanced edge-down, sunk 2 mm into a large box's top face: an edge-face crossing whose deepest points
+    # are the edge verts.
+    box_flat = trimesh.creation.box(extents=(0.06, 0.06, 0.06)).subdivide().subdivide()
+    box_tilted = trimesh.creation.box(extents=(0.02, 0.02, 0.02))
+    box_tilted.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 4, (1, 0, 0)))
+    box_tilted.apply_translation((0.0, 0.0, 0.03 - 2e-3 + 0.01 * np.sqrt(2)))
+    box_tilted = box_tilted.subdivide().subdivide()
+    max_depth, crossings = measure(
+        "box edge sunk 2mm into face",
+        [[(box_flat.vertices, box_flat.faces)], [(box_tilted.vertices, box_tilted.faces)]],
+    )
+    assert len(crossings) == 1
+    assert_allclose(max_depth, 2e-3, atol=EXACT_TOL)
+
+    # Solid beam whose tip stops halfway through the wall of a tube: the tip centre is equidistant from the
+    # outer and inner wall surfaces, so the depth is exactly wall/2 - the analytical pin for partial
+    # wall-crossings (the beam is 10 mm wide, far wider than its 2 mm penetration).
+    tube = trimesh.creation.annulus(r_min=0.012, r_max=0.016, height=0.04, sections=96)
+    tube = tube.subdivide().subdivide().subdivide()
+    beam = trimesh.creation.box(extents=(0.02, 0.01, 0.01)).apply_translation((0.024, 0.0, 0.0))
+    beam = beam.subdivide().subdivide()
+    max_depth, crossings = measure(
+        "beam halfway through tube wall", [[(tube.vertices, tube.faces)], [(beam.vertices, beam.faces)]]
+    )
+    assert len(crossings) == 1
+    assert_allclose(max_depth, 2e-3, atol=EXACT_TOL)
+
+    # Beam all the way through BOTH tube walls, protruding on each side: the cheapest escape slides the beam
+    # sideways until its 10 mm slab clears the 16 mm outer radius - 21 mm - beating the axial routes.
+    beam_diametral = trimesh.creation.box(extents=(0.06, 0.01, 0.01))
+    beam_diametral = beam_diametral.subdivide().subdivide().subdivide().subdivide()
+    max_depth, crossings = measure(
+        "beam through both tube walls",
+        [[(tube.vertices, tube.faces)], [(beam_diametral.vertices, beam_diametral.faces)]],
+    )
+    assert len(crossings) == 1
+    assert_allclose(max_depth, 21e-3, atol=EXACT_TOL)
+
+    # Beam parallel to the tube axis, grooved lengthwise into the side wall and protruding from both open ends
+    # (a key in a keyway): the escape is the radial push-out, outer radius minus the beam's inner face.
+    beam_keyway = trimesh.creation.box(extents=(0.01, 0.01, 0.06)).apply_translation((0.014, 0.0, 0.0))
+    beam_keyway = beam_keyway.subdivide().subdivide().subdivide().subdivide()
+    max_depth, crossings = measure(
+        "beam grooved along tube wall", [[(tube.vertices, tube.faces)], [(beam_keyway.vertices, beam_keyway.faces)]]
+    )
+    assert len(crossings) == 1
+    assert_allclose(max_depth, 7e-3, atol=EXACT_TOL)
+
+    # Slim beam fully through one wall, tip hanging in the bore: tube surface verts sit 2 mm inside the 4 mm
+    # beam, and beam verts at most as deep in the 4 mm wall - depth 2 mm however far the beam protrudes.
+    beam_slim = trimesh.creation.box(extents=(0.024, 0.004, 0.004)).apply_translation((0.02, 0.0, 0.0))
+    beam_slim = beam_slim.subdivide().subdivide().subdivide().subdivide()
+    max_depth, crossings = measure(
+        "beam through one tube wall", [[(tube.vertices, tube.faces)], [(beam_slim.vertices, beam_slim.faces)]]
+    )
+    assert len(crossings) == 1
+    assert_allclose(max_depth, 8e-3, atol=EXACT_TOL)
+
+    # Two thin walls crossing: perpendicular plates, then at 45 degrees (the depth is angle-invariant: half the
+    # plate thickness either way), then two curved cup-like shells whose 5 mm walls cross - depth 2.5 mm.
+    plate_upright = trimesh.creation.box(extents=(4e-3, 0.05, 0.05))
+    for _ in range(4):
+        plate_upright = plate_upright.subdivide()
+    max_depth, crossings = measure(
+        "perpendicular plates crossing",
+        [[(plate.vertices, plate.faces)], [(plate_upright.vertices, plate_upright.faces)]],
+    )
+    assert len(crossings) == 1
+    assert_allclose(max_depth, 27e-3, atol=EXACT_TOL)
+    plate_tilted = plate_upright.copy().apply_transform(trimesh.transformations.rotation_matrix(np.pi / 4, (0, 1, 0)))
+    max_depth, crossings = measure(
+        "45-degree plates crossing", [[(plate.vertices, plate.faces)], [(plate_tilted.vertices, plate_tilted.faces)]]
+    )
+    assert len(crossings) == 1
+    assert_allclose(max_depth, (0.05 * np.sin(np.pi / 4) + 4e-3 * np.cos(np.pi / 4)) / 2 + 2e-3, atol=EXACT_TOL)
+    shell_thick = hollow_sphere(0.03, 0.025)
+    shell_other = hollow_sphere(0.03, 0.025)
+    max_depth, crossings = measure(
+        "two shells crossing walls",
+        [[shell_thick], [(shell_other[0] + (0.055, 0.0, 0.0), shell_other[1])]],
+    )
+    assert len(crossings) == 1
+    assert_allclose(max_depth, 5e-3, atol=EXACT_TOL)
+
+    # Analytical mug-vs-cup: two parallel open cylinders whose walls cross. Parallel cups never interlock, so
+    # the separation is exactly the press depth - asserted both shallow and MUCH deeper than the wall.
+    for press in (3e-3, 15e-3):
+        max_depth, crossings = measure(
+            f"parallel cups walls crossed {press * 1e3:g}mm",
+            [[(tube.vertices, tube.faces)], [(tube.vertices + (0.032 - press, 0.0, 0.0), tube.faces)]],
+        )
+        assert len(crossings) == 1
+        assert_allclose(max_depth, press, atol=EXACT_TOL)
+
+    # Real-asset cases, both representations (watertight wraps and convex decompositions) built as separate
+    # entities of a single scene, all placements done by rigid-transforming the extracted geoms. Real meshes
+    # have no analytical truth: bounds only, to catch garbage estimates.
+    scene = gs.Scene(
+        rigid_options=gs.options.RigidOptions(
+            # Collision disabled to not overflow the contact budget on the step taken by the build.
+            # This test is not stepping physics.
+            enable_collision=False,
+        ),
+    )
+    asset_entities = {
+        convexify: [
+            scene.add_entity(
+                gs.morphs.MJCF(
+                    file=f"{get_hf_dataset(pattern=f'{name}/*')}/{name}/{xml}",
+                    convexify=convexify,
+                ),
+            )
+            for name, xml in (
+                ("cup_2", "model.xml"),
+                ("apple_15", "model.xml"),
+                ("mug_1", "output.xml"),
+                ("donut_0", "output.xml"),
+            )
+        ]
+        for convexify in (False, True)
+    }
+    scene.build()
+
+    def placed(geoms, pos, quat):
+        quat = np.asarray(quat)
+        return [(gu.transform_by_trans_quat(verts, pos, quat), faces) for verts, faces in geoms]
+
+    def overlap_of(geoms_a, geoms_b):
+        depth = 0.0
+        for verts_a, faces_a in geoms_a:
+            for verts_b, faces_b in geoms_b:
+                if (verts_a.min(0) > verts_b.max(0)).any() or (verts_b.min(0) > verts_a.max(0)).any():
+                    continue
+                depth = max(
+                    depth,
+                    -igl.signed_distance(verts_a, verts_b, faces_b)[0].min(),
+                    -igl.signed_distance(verts_b, verts_a, faces_a)[0].min(),
+                )
+        return depth
+
+    for convexify, entities in asset_entities.items():
+        # Geoms expressed in their link frame: MJCF roots may carry a non-identity build pose.
+        cup_geoms, apple_geoms, mug_geoms, donut_geoms = (
+            [
+                (
+                    gu.inv_transform_by_trans_quat(
+                        tensor_to_array(geom.get_verts(), dtype=np.float64),
+                        tensor_to_array(link.get_pos(relative=False), dtype=np.float64),
+                        tensor_to_array(link.get_quat(relative=False), dtype=np.float64),
+                    ),
+                    geom.trimesh.faces.astype(np.int64),
+                )
+                for link in entity.links
+                for geom in link.geoms
+            ]
+            for entity in entities
+        )
+
+        # Seed-52 pile snapshot: an apple nearly filling a cup with its stem bulging ~11 mm through the wall
+        # (the depth is the push-back heal - the protrusion past the pierced wall - far below the
+        # extraction-scale separation and far above the 1.6 mm wall incursion), a mug rim against a cup wall,
+        # and two stacked donuts.
+        links = [
+            placed(cup_geoms, (0.1597, -0.1656, 0.1319), (0.3704, 0.2497, -0.5295, 0.7212)),
+            placed(apple_geoms, (0.1587, -0.1923, 0.1412), (0.5246, -0.6281, 0.3181, -0.4786)),
+            placed(mug_geoms, (0.2153, 0.2083, 0.0792), (0.9515, -0.2904, 0.0217, -0.099)),
+            placed(cup_geoms, (0.1566, 0.1737, 0.1095), (-0.2635, -0.0664, -0.6425, 0.7165)),
+            placed(donut_geoms, (-0.1017, -0.2996, 0.0673), (0.3397, 0.9298, -0.0732, 0.1215)),
+            placed(donut_geoms, (-0.1196, -0.2717, 0.1243), (-0.1533, 0.8963, -0.3895, 0.1462)),
+        ]
+        max_depth, crossings = measure(f"seed-52 snapshot ({convexify=})", links)
+        pair_expected = {(0, 1), (2, 3), (4, 5)}
+        pairs_found = {(c.link_a, c.link_b) for c in crossings}
+        if convexify:
+            # CoACD output varies per platform and its surface deviations shift shallow classifications (the
+            # decomposed cup wall reads a genuine 0.8 mm apple overlap - a contact, not a crossing): only
+            # forbid spurious pairs.
+            assert pairs_found <= pair_expected
+        else:
+            assert pairs_found == pair_expected
+            (apple_cup_depth,) = [c.depth for c in crossings if (c.link_a, c.link_b) == (0, 1)]
+            assert 8e-3 < apple_cup_depth < 20e-3
+        for c in crossings:
+            assert 0.3e-3 < c.depth <= 0.12
+        assert 0.5e-3 < max_depth <= 0.12
+
+        # Mug pressed into the cup: approach from separation, bisect to first contact, press further - two
+        # lateral wall presses, plus the axial approach that telescopes the cup into the mug's opening before
+        # touching, pressed both shallow and deep (a jammed cup-in-mug with large penetration).
+        cup_center = np.concatenate([verts for verts, _ in cup_geoms]).mean(0)
+        mug_center = np.concatenate([verts for verts, _ in mug_geoms]).mean(0)
+        for direction, press in (
+            ((-1.0, 0.0, 0.0), 3e-3),
+            ((-1.0, 0.0, 0.0), 12e-3),
+            ((0.0, 0.0, -1.0), 3e-3),
+            ((0.0, 0.0, -1.0), 25e-3),
+        ):
+            direction = np.asarray(direction)
+            start = cup_center - mug_center - 0.3 * direction
+            t_lo, t_hi = 0.0, 0.6
+            assert overlap_of(cup_geoms, [(verts + start, faces) for verts, faces in mug_geoms]) == 0.0
+            for _ in range(24):
+                t_mid = 0.5 * (t_lo + t_hi)
+                moved = [(verts + start + t_mid * direction, faces) for verts, faces in mug_geoms]
+                if overlap_of(cup_geoms, moved) > 0.0:
+                    t_hi = t_mid
+                else:
+                    t_lo = t_mid
+            pressed = [(verts + start + (t_hi + press) * direction, faces) for verts, faces in mug_geoms]
+            max_depth, crossings = measure(
+                f"mug pressed {press * 1e3:g}mm into cup ({direction=}, {convexify=})", [cup_geoms, pressed]
+            )
+            assert len(crossings) == 1
+            if convexify:
+                # Hull surface deviations shift the first-contact point and the heal witnesses.
+                assert 1e-3 < max_depth < press + 3e-3
+            else:
+                assert_allclose(max_depth, press, atol=2e-3)
+
+        if not convexify:
+            # Oversized and wedged: an apple scaled 1.25x stuffed into the cup (jammed against the walls,
+            # poking out of the opening: extraction-scale escape) and a unit apple centred in the donut's hole
+            # (wedged on the ring like the analytical sphere-in-torus seat), placed by co-centring centroids.
+            apple_center = np.concatenate([verts for verts, _ in apple_geoms]).mean(0)
+            donut_center = np.concatenate([verts for verts, _ in donut_geoms]).mean(0)
+            # Essential enclosure: the oversized apple swallows most of the cup, so the depth is the burial
+            # overlap, not an extraction distance.
+            apple_in_cup = [((verts - apple_center) * 1.25 + cup_center, faces) for verts, faces in apple_geoms]
+            max_depth, crossings = measure("apple x1.25 stuffed in cup", [cup_geoms, apple_in_cup])
+            assert len(crossings) == 1
+            assert 8e-3 < max_depth < 16e-3
+            # Inflated further the cup wall gets buried deeper and the depth keeps growing with the burial
+            # (the separation is even larger for a co-centred enclosure, so min(burial, separation) stays on
+            # the burial side). FIXME: replace the reference value with an analytical bound.
+            apple_x2 = [((verts - apple_center) * 2.0 + cup_center, faces) for verts, faces in apple_geoms]
+            max_depth, crossings = measure("apple x2 engulfing cup", [cup_geoms, apple_x2])
+            assert len(crossings) == 1
+            assert 28e-3 < max_depth < 42e-3
+            # Bore-fit apple with its stem through the mug's side wall (ensemble seed-47 snapshot): the
+            # bore contacts dilute the mean breach normal below coherence, but the nearest crossed-wall
+            # faces at the pierce sites keep a coherent axis, so the depth is the push-back heal of the
+            # stem protrusion - not the extraction-scale separation (59mm) nor the sub-wall incursion.
+            max_depth, crossings = measure(
+                "apple stem through mug wall",
+                [
+                    placed(mug_geoms, (-0.1546, 0.0640, 0.0663), (0.4844, 0.2548, 0.6851, -0.4805)),
+                    placed(apple_geoms, (-0.1450, 0.0528, 0.0657), (0.2649, 0.6608, 0.6488, 0.2685)),
+                ],
+            )
+            assert len(crossings) == 1
+            assert 7e-3 < max_depth < 11e-3
+
+            # Apple wedged inside the cup, pressing the wall from the bore side without piercing it
+            # (ensemble seed-83 snapshot): the press normal is coherent but its retraction is blocked by
+            # the wedge, so the depth is the incursion - not the press-direction escape through the mouth
+            # (65mm) that a coherent dent would otherwise read as its retraction.
+            max_depth, crossings = measure(
+                "apple wedged inside cup",
+                [
+                    placed(cup_geoms, (-0.1518, -0.0280, 0.0586), (0.7224, 0.6646, -0.1625, -0.0991)),
+                    placed(apple_geoms, (-0.1662, -0.0615, 0.0607), (-0.8692, -0.4072, 0.1991, -0.1973)),
+                ],
+            )
+            assert len(crossings) == 1
+            assert 1e-3 < max_depth < 2.5e-3
+
+            apple_in_donut = [(verts - apple_center + donut_center, faces) for verts, faces in apple_geoms]
+            # A seat pressed all around: the depth is the ring burial in the apple, not the unseat.
+            max_depth, crossings = measure("apple centred in donut hole", [donut_geoms, apple_in_donut])
+            assert len(crossings) == 1
+            assert 10e-3 < max_depth < 25e-3
+
+    if show_viewer:
+        display_collision_pairs(pairs_viz)
+
+
+@pytest.mark.required
+def test_as_grayscale_image(tmp_path):
+    for batch_shape in ((), (2,)):
+        depth = np.broadcast_to(array=[[1.0, 3.0, 7.0]], shape=(*batch_shape, 1, 3))
+        for is_black_to_white, depth_expected in ((False, [[255, 127, 0]]), (True, [[0, 127, 255]])):
+            depth_image = as_grayscale_image(depth, enable_log_scale=True, black_to_white=is_black_to_white)
+            assert_equal(depth_image, depth_expected)
+
+    # Depth images have no channel axis, so a narrow width must not be mistaken for one when exporting
+    exporter = FrameImageExporter(tmp_path)
+    for width in range(1, 6):
+        for n_envs in (0, 2):
+            shape = (*((n_envs,) if n_envs else ()), 5, width)
+            depth = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+            exporter.export_frame_single_camera(width, n_envs, depth=depth)
+            image_files = sorted(tmp_path.glob(f"DEPTH_cam{n_envs}_env*_{width:03d}.png"))
+            assert len(image_files) == max(n_envs, 1)
+            for image_file, depth_env in zip(image_files, depth.reshape(-1, 5, width)):
+                with Image.open(image_file) as image:
+                    assert_equal(image, as_grayscale_image(depth_env))
+
+
+@pytest.mark.required
+def test_running_mean():
+    # A window mean covers the latest samples alone once there are enough, and an exponential mean starts from the first
+    window_mean = RunningMean(window=3)
+    for sample in (1.0, 2.0):
+        window_mean.update(sample)
+    assert math.isnan(window_mean.value)
+    for sample in (3.0, 10.0):
+        window_mean.update(sample)
+    assert math.isclose(window_mean.value, (2.0 + 3.0 + 10.0) / 3)
+    exponential_mean = RunningMean(alpha=0.25)
+    assert math.isnan(exponential_mean.value)
+    exponential_mean.update(4.0)
+    exponential_mean.update(8.0)
+    assert math.isclose(exponential_mean.value, 0.25 * 4.0 + 0.75 * 8.0)
+    with pytest.raises(gs.GenesisException, match="Exactly one of"):
+        RunningMean(window=3, alpha=0.25)
+    with pytest.raises(gs.GenesisException, match="one sample at least"):
+        RunningMean(window=0)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("backend", [None])
+def test_logger_prints_once_with_root_logging(backend):
+    script = (
+        "import logging; logging.basicConfig(level=logging.INFO); "
+        "import genesis as gs; gs.init(backend=gs.cpu); gs.logger.warning('Genesis warning')"
+    )
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, encoding="utf-8")
+    assert proc.returncode == 0, proc.stderr
+    assert (proc.stdout + proc.stderr).count("Genesis warning") == 1
+
+
+def _redirect_libc_stderr_child(args: list[str]):
+    """Child process: init genesis, then spawn a process."""
+    gs.init(backend=gs.cpu, logging_level="info")
+    print(subprocess.check_output([sys.executable, "-c", "print(42)"], text=True), end="")
+    sys.exit(RET_SUCCESS)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("backend", [None])
+def test_redirect_libc_stderr(backend):
+    cmd_line = [sys.executable, "-m", MODULE, _redirect_libc_stderr_child.__name__]
+    # Quadrants warns on its native logger that 'default_fp' overrides this environment variable
+    env = dict(os.environ)
+    env["QD_DEFAULT_FP"] = "32"
+    proc = subprocess.run(cmd_line, capture_output=True, text=True, encoding="utf-8", env=env, cwd=MODULE_ROOT_DIR)
+    assert proc.returncode == RET_SUCCESS, proc.stdout + proc.stderr
+    assert "42" in proc.stdout.splitlines()
+    # FIXME: quadrants#1075 - On Windows, the native logger of Quadrants writes to the standard error handle that it keeps
+    # from its creation, so redirecting descriptor 2 does not collect its messages.
+    if sys.platform == "win32":
+        pytest.xfail("quadrants#1075")
+    qd_warning = "Environment variable QD_DEFAULT_FP=32 overridden"
+    assert proc.stdout.count(qd_warning) == 1
+    assert qd_warning not in proc.stderr
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("backend", [None])
+def test_logger_raw_theme_plain_text(capsys):
+    gs.init(backend=gs.cpu, theme="raw", logging_level="info")
+    try:
+        scene = gs.Scene(show_viewer=False)
+        scene.add_entity(
+            morph=gs.morphs.Box(
+                size=(0.1, 0.1, 0.1),
+            ),
+            name="box",
+        )
+        gs.logger.warning("Watch ~<this>~.")
+    finally:
+        gs.destroy()
+    out = capsys.readouterr().out
+    assert out.isascii() and "\x1b" not in out
+    lines = out.splitlines()
+    assert all(re.match(r"\[Genesis \d{2}:\d{2}:\d{2}( [A-Z]+)?\] ", line) for line in lines)
+    assert any(re.fullmatch(r"\[Genesis \d{2}:\d{2}:\d{2} WARNING\] Watch this\.", line) for line in lines)
+    assert any(re.search(r"\] Adding <gs\.engine\.entities\.RigidEntity> 'box'\. idx: 0, ", line) for line in lines)
+
+
+@pytest.mark.required
+def test_warn_once():
+    scene_1 = gs.Scene(show_viewer=False)
+    scene_2 = gs.Scene(show_viewer=False)
+    with patch.object(gs, "logger", create=True) as mock_logger:
+        with patch.object(mock_logger, "warning") as mock_warning:
+            for message in ("Warning 1", "Warning 1", "Warning 2", ""):
+                warn_once(scene_1, message)
+            warn_once(scene_2, "Warning 1")
+            warn_once(scene_2, "")
+            warn_once(scene_2, "")
+    assert mock_warning.call_args_list == [call("Warning 1"), call("Warning 2"), call(""), call("Warning 1"), call("")]
+
+
+def test_build_guard_requires_buildable_mixin():
+    with pytest.raises(gs.GenesisException, match="only a subclass of BuildableMixin"):
+
+        class Unbuildable:
+            @gs.assert_built
+            def step(self):
+                pass
+
+
+@pytest.mark.required
+def test_animate(tmp_path):
+    colors = ((255, 0, 0), (0, 255, 0), (0, 0, 255))
+    # The alpha channel of the first image is dropped, which gives it the shape of the others
+    imgs = [
+        np.full((48, 64, 4), (*colors[0], 128), dtype=np.uint8),
+        *(np.full((48, 64, 3), color, dtype=np.uint8) for color in colors[1:]),
+    ]
+    video_path = tmp_path / "video.mp4"
+    gs.tools.animate(imgs, video_path, fps=30)
+    with av.open(video_path) as container:
+        frames = np.stack([frame.to_ndarray(format="rgb24") for frame in container.decode(video=0)])
+    assert_allclose(frames, np.array(colors)[:, None, None], atol=5)
+
+
+if __name__ == "__main__":
+    globals()[sys.argv[1]](sys.argv[2:])

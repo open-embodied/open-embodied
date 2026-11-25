@@ -1,0 +1,259 @@
+name: Benchmark Comparison & Alarm Regression
+
+on:
+  workflow_run:
+    workflows: ["Production"]
+    types: [completed]
+  # Callers select a W&B project and optional filters. Their benchmark artifacts belong to the calling run;
+  # the Production trigger instead reads artifacts from the completed run and uses Genesis's usual project.
+  workflow_call:
+    inputs:
+      wandb_project:
+        description: W&B project containing baseline measurements.
+        required: true
+        type: string
+      wandb_filters:
+        description: JSON filters selecting baseline runs.
+        type: string
+        default: '{}'
+    secrets:
+      WANDB_API_KEY:
+        required: false
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  comment-if-regressed:
+    runs-on: ubuntu-latest
+    # The workflow run is the completed Production run, or the one that started a calling workflow.
+    if: >
+      github.event.workflow_run.event == 'pull_request' &&
+      contains(fromJson('["success","neutral"]'), github.event.workflow_run.conclusion)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # The comparison script beside this very workflow file, whichever repository the run belongs to.
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: |
+          # Pin wandb<0.25: 0.25.x changed api.runs() to no longer populate
+          # run.config in batch queries, breaking alarm.py's config["revision"] lookup.
+          python -m pip install --quiet --upgrade 'wandb<0.25' frozendict
+
+      # The completed Production run when the run belongs to the repository of this file, the calling run otherwise:
+      # a call's benchmark jobs ran in that run, the workflow run of its event being the caller's own trigger, which
+      # holds no benchmark.
+      - name: Download speed artifacts from triggering run
+        id: dl_speed
+        uses: actions/download-artifact@v4
+        with:
+          pattern: speed-test-*
+          run-id: ${{ github.repository == job.workflow_repository && github.event.workflow_run.id || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ./artifacts
+
+      - name: Download mem artifacts from triggering run
+        id: dl_mem
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mem-test-*
+          run-id: ${{ github.repository == job.workflow_repository && github.event.workflow_run.id || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ./artifacts
+
+      - name: Show downloaded speed files
+        run: |
+          echo "Downloaded into ${{ steps.dl_speed.outputs.download-path }}"
+          ls -la ${{ steps.dl_speed.outputs.download-path }} || true
+          (command -v tree >/dev/null && tree -a ${{ steps.dl_speed.outputs.download-path }}) || true
+
+      - name: Show downloaded mem files
+        run: |
+          echo "Downloaded into ${{ steps.dl_mem.outputs.download-path }}"
+          ls -la ${{ steps.dl_mem.outputs.download-path }} || true
+          (command -v tree >/dev/null && tree -a ${{ steps.dl_mem.outputs.download-path }}) || true
+
+      - name: Check regressions + build outputs
+        id: analyze
+        env:
+          # Note that secrets are not passed to workflows that are triggered by a pull request from a fork
+          # --- W&B ---
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          WANDB_ENTITY: genesis-ai-company
+          WANDB_SILENT: "true"
+          BASELINE_PROJECT: >-
+            ${{ inputs.wandb_project || (github.repository == job.workflow_repository && 'genesis-benchmarks-2' || '') }}
+          BASELINE_FILTERS: ${{ inputs.wandb_filters || '{}' }}
+        run: |
+          mkdir -p /tmp
+          set +e
+          python .github/workflows/scripts/alarm.py \
+            --speed-artifacts-dir ${{ steps.dl_speed.outputs.download-path }} \
+            --mem-artifacts-dir ${{ steps.dl_mem.outputs.download-path }} \
+            --wandb-project "$BASELINE_PROJECT" \
+            --wandb-filters "$BASELINE_FILTERS" \
+            --max-valid-revisions 5 \
+            --max-fetch-revisions 40 \
+            --runtime-fps-regression-tolerance-pct 8 \
+            --compile-time-regression-tolerance-pct 30 \
+            --mem-regression-tolerance-pct 4 \
+            --csv-runtime-fps-path /tmp/runtime_fps.csv \
+            --csv-compile-time-path /tmp/compile_time.csv \
+            --csv-mem-path /tmp/mem.csv \
+            --check-body-path /tmp/check_output.md \
+            --exit-code-regression 42 \
+            --exit-code-alert 43
+          EXIT_CODE=$?
+          set -e
+          # Any other failure is the comparison itself breaking, which must never pass for a clean result
+          case "$EXIT_CODE" in
+            0|42|43) echo "HAS_ERRORS=0" >> "$GITHUB_ENV" ;;
+            *) echo "HAS_ERRORS=1" >> "$GITHUB_ENV" ;;
+          esac
+          # Expose outputs to later steps
+          if [ -f /tmp/check_output.md ]; then
+            {
+              echo 'CHECK_OUTPUT<<__EOF__'
+              cat /tmp/check_output.md
+              echo '__EOF__'
+            } >> "$GITHUB_ENV"
+          else
+            echo "CHECK_OUTPUT=" >> "$GITHUB_ENV"
+          fi
+          # Export status
+          echo "HAS_REGRESSIONS=$([ "$EXIT_CODE" = 42 ] && echo 1 || echo 0)" >> "$GITHUB_ENV"
+          echo "HAS_ALERTS=$([ "$EXIT_CODE" = 43 ] && echo 1 || echo 0)" >> "$GITHUB_ENV"
+      - name: Upload benchmark comparisons in CSV
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-comparison-tables
+          path: |
+            /tmp/runtime_fps.csv
+            /tmp/compile_time.csv
+            /tmp/mem.csv
+          if-no-files-found: warn
+
+      - name: Publish report and PR status
+        id: publish_check
+        # GitHub normally skips steps after a failure; !cancelled() lets this reporting step run after a failure.
+        if: ${{ !cancelled() }}
+        uses: actions/github-script@v8
+        env:
+          CHECK_NAME: '_Artifact: Benchmark Comparison'
+          CHECK_OUTPUT: ${{ env.CHECK_OUTPUT }}
+          HAS_REGRESSIONS: ${{ env.HAS_REGRESSIONS }}
+          HAS_ALERTS: ${{ env.HAS_ALERTS }}
+          HAS_ERRORS: >-
+            ${{ (steps.analyze.outcome != 'success' || steps.upload.outcome != 'success') && '1' || env.HAS_ERRORS }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        with:
+          script: |
+            const artifactUrl = process.env.ARTIFACT_URL || '';
+            let body = process.env.CHECK_OUTPUT || '';
+            if (body && artifactUrl) {
+              body += `\n\n**Artifact:** [Download raw data](${artifactUrl})`;
+            }
+
+            let summary;
+            let state = 'success';
+            if ((process.env.HAS_ERRORS || '0') === '1') {
+              summary = '❌ The comparison failed to run. See the job log.';
+              state = 'failure';
+            } else if ((process.env.HAS_REGRESSIONS || '0') === '1') {
+              summary = '❗ Regressions detected. See tables below.';
+              state = 'failure';
+            } else if ((process.env.HAS_ALERTS || '0') === '1') {
+              summary = '⚠️ Large deviation detected. See tables below.';
+            } else {
+              summary = '✅ No regressions detected. See tables below.';
+            }
+
+            // The commit under test comes from whichever event started the run: a completed workflow run, or a pull
+            // request when this workflow is called from one. '?.' yields undefined through an absent member.
+            const headSha = context.payload.workflow_run?.head_sha
+              || context.payload.pull_request?.head.sha
+              || context.sha;
+
+            // Write the detailed report to this job's summary and publish a commit status on the tested commit.
+            // Link the status to this workflow run.
+            await core.summary
+              .addHeading(process.env.CHECK_NAME)
+              .addRaw(summary, true)
+              .addRaw(body, true)
+              .write();
+            const reportUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}` +
+              `/actions/runs/${context.runId}`;
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: headSha,
+              context: process.env.CHECK_NAME,
+              state,
+              target_url: reportUrl,
+              description: summary,
+            });
+            core.setOutput("check-url", reportUrl);
+
+      - name: Add PR comment
+        if: ${{ env.HAS_REGRESSIONS == '1' || env.HAS_ALERTS == '1' }}
+        uses: actions/github-script@v8
+        env:
+          HAS_REGRESSIONS: ${{ env.HAS_REGRESSIONS }}
+          REPORT_URL: ${{ steps.publish_check.outputs.check-url }}
+        with:
+          script: |
+            // Getting PR number when using 'workflow_run' is tricky. For reference, see:
+            // * https://docs.github.com/en/webhooks/webhook-events-and-payloads#workflow_run
+            // * https://stackoverflow.com/a/75420270/4820605
+            let prNumber = context.payload.pull_request?.number;
+            if (prNumber === undefined) {
+              const run = context.payload.workflow_run;
+              if (!run) {
+                throw new Error(`Event '${context.eventName}' carries no pull request to comment on.`);
+              }
+              // Look the pull request up by head branch, closed ones included, since the benchmarks may complete after
+              // it is closed: 'repos.listPullRequestsAssociatedWithCommit' returns the merged and open ones alone. The
+              // match on the commit and the preference for an open pull request follow the setup of production.yml.
+              const { data } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'all',
+                head: `${run.head_repository.owner.login}:${run.head_branch}`,
+              });
+              const pulls = data.filter((pull) => pull.head.sha === run.head_sha);
+              const pull = pulls.find((pull) => pull.state === 'open') ?? pulls[0];
+              if (!pull) {
+                throw new Error(`Commit ${run.head_sha} heads no pull request of ${context.repo.repo}.`);
+              }
+              prNumber = pull.number;
+            }
+
+            const title = (process.env.HAS_REGRESSIONS || '0') === '1'
+              ? '❗ Benchmark Regression Detected' : '⚠️ Abnormal Benchmark Result Detected';
+            const comment = `**${title} ➡️ [Report](${process.env.REPORT_URL})**`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: comment
+            });
+
+      - name: Fail on comparison errors
+        if: ${{ env.HAS_ERRORS == '1' }}
+        run: exit 1

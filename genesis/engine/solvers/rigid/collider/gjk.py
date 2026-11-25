@@ -1,0 +1,1716 @@
+import math
+
+import quadrants as qd
+
+import genesis as gs
+import genesis.utils.geom as gu
+from genesis.engine.solvers.rigid.data import DynInfo, DynState, RigidInfo
+from . import support_field
+from .constants import EPA_POLY_INIT_RETURN_CODE, GJK_RETURN_CODE, GJK_STAGE, RETURN_CODE
+from .data import ColliderState, GJKConfig, GJKInfo, GJKScratch, GJKState
+from .epa import (
+    func_epa,
+    func_epa_init_polytope_2d,
+    func_epa_init_polytope_3d,
+    func_epa_init_polytope_4d,
+    func_safe_epa,
+    func_safe_epa_init,
+)
+from .gjk_support import func_support, support_driver
+from .gjk_utils import func_project_origin_to_plane
+from .multi_contact import func_multi_contact, func_safe_normalize
+from .support_field import SupportFieldInfo
+from .utils import func_det3, func_is_discrete_geoms
+
+
+class GJK:
+    def __init__(self, rigid_solver):
+        self._solver = rigid_solver
+
+        # Resolved by the collider (see '_init_config')
+        enable_contact_patch = rigid_solver._options.enable_contact_patch
+        gjk_max_iterations = 50
+        epa_max_iterations = 50
+        # 6 * epa_max_iterations is the maximum number of faces in the polytope.
+        polytope_max_faces = 6 * epa_max_iterations
+
+        if rigid_solver.rigid_config.requires_grad:
+            # For differentiable contact detection, we find multiple contact points for each pair.
+            max_contacts_per_pair = 20
+            max_contact_polygon_verts = 1
+        elif enable_contact_patch:
+            # The maximum number of contacts per pair is related to the maximum number of contact manifold vertices.
+            # MuJoCo sets [max_contacts_per_pair] to 50 and [max_contact_polygon_verts] to 150, when it uses
+            # multi-contact detection algorithm, assuming that the faces could have more than 4 vertices. However, we
+            # set them to smaller values, because we do not expect the faces to have more than 4 vertices in most cases,
+            # and we want to keep the memory usage low.
+            max_contacts_per_pair = 8
+            max_contact_polygon_verts = 30
+        else:
+            max_contacts_per_pair = 1
+            max_contact_polygon_verts = 1
+
+        self.gjk_config = GJKConfig(enable_contact_patch=enable_contact_patch)
+
+        float_min, float_max = 1e-15, 1e15
+        self.gjk_info = GJKInfo(
+            values=dict(
+                max_contacts_per_pair=max_contacts_per_pair,
+                max_contact_polygon_verts=max_contact_polygon_verts,
+                gjk_max_iterations=gjk_max_iterations,
+                epa_max_iterations=epa_max_iterations,
+                # When using larger minimum values (e.g. gs.EPS), unstability could occur for some examples (e.g. box
+                # pyramid). Also, since different backends could have different precisions (e.g. computing vector norm),
+                # we use a very small value, so that there is no discrepancy between backends.
+                FLOAT_MIN=float_min,
+                FLOAT_MIN_SQ=float_min**2,
+                FLOAT_MAX=float_max,
+                FLOAT_MAX_SQ=float_max**2,
+                tolerance=1e-6,
+                collision_eps=1e-6,
+                # This value has been experimentally determined based on the examples that we currently have (e.g.
+                # pyramid, tower, ...), but it could be further tuned based on the future examples.
+                simplex_max_degeneracy_sq=1e-5**2,
+                polytope_max_faces=polytope_max_faces,
+                # This value has been experimentally determined based on the examples that we currently have (e.g.
+                # pyramid, tower, ...). We observed the error usually reaches around 5e-4, so we set the threshold to
+                # 1e-4 to be safe. However, this value could be further tuned based on the future examples.
+                polytope_max_rel_reprojection_error=1e-4,
+                polytope_max_abs_reprojection_error=1e-4,
+                # The values are matching MuJoCo for compatibility. Increasing this value could be useful for detecting
+                # contact manifolds even when the normals are not perfectly aligned, but we observed that it leads to
+                # more false positives and thus not a perfect solution for the multi-contact detection.
+                contact_face_tol=math.cos(1.6e-3),
+                contact_edge_tol=math.sin(1.6e-3),
+                # We apply sqrt to the 10 * EPS value because we often use the square of the normal norm as the
+                # denominator.
+                diff_contact_min_normal_norm=math.sqrt(gs.EPS * 10.0),
+            )
+        )
+
+        # The scratch states GJK runs on, the fields of one struct so that the collider opts each in by name and with
+        # its own sizes (see GJKScratch). A state detecting overlaps alone runs neither EPA nor differentiable contacts.
+        requires_grad = rigid_solver.rigid_config.requires_grad
+        full = dict(diff_contacts=not requires_grad)
+        scratch = GJKScratch(
+            sizes=dict(
+                polytope_verts=5 + epa_max_iterations,
+                polytope_faces=polytope_max_faces,
+                pair_contacts=max_contacts_per_pair,
+                polygon_verts=max_contact_polygon_verts,
+            ),
+            # A worker reads its own scratch alone, so the arrays of a worker are stored together
+            env_first=True,
+            unused={
+                GJKScratch.main: full,
+                GJKScratch.contact0: dict(epa=True, diff_contacts=True),
+                GJKScratch.multicontact: full,
+            },
+            requires_grad=requires_grad,
+        )
+        self.gjk_state = scratch.main
+        self.contact0_gjk_state = scratch.contact0
+        self.multicontact_gjk_state = scratch.multicontact
+
+
+@qd.func
+def clear_cache(i_b: int, gjk_state: GJKState):
+    """
+    Clear the cache information to prepare for the next GJK-EPA run.
+
+    The cache includes the temporary information about simplex consturction or multi-contact detection.
+    """
+    gjk_state.support_mesh_prev_vertex_id[0, i_b] = -1
+    gjk_state.support_mesh_prev_vertex_id[1, i_b] = -1
+    gjk_state.multi_contact_flag[i_b] = False
+    gjk_state.last_searched_simplex_vertex_id[i_b] = 0
+
+
+@qd.func
+def func_gjk_contact(
+    i_ga: int,
+    i_gb: int,
+    i_b: int,
+    pos_a: qd.types.vector(3),
+    quat_a: qd.types.vector(4),
+    pos_b: qd.types.vector(3),
+    quat_b: qd.types.vector(4),
+    dyn_state: DynState,
+    collider_state: ColliderState,
+    gjk_state: GJKState,
+    dyn_info: DynInfo,
+    rigid_info: RigidInfo,
+    gjk_info: GJKInfo,
+    support_field_info: SupportFieldInfo,
+    rigid_config: qd.template(),
+    collider_config: qd.template(),
+    gjk_config: qd.template(),
+):
+    """
+    Detect (possibly multiple) contact between two geometries using GJK and EPA algorithms.
+
+    We first run the GJK algorithm to find the minimum distance between the two geometries. If the distance is
+    smaller than the collision epsilon, we consider the geometries colliding. If they are colliding, we run the EPA
+    algorithm to find the exact contact points and normals.
+
+    .. seealso::
+    MuJoCo's implementation:
+    https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L2259
+    """
+    # Clear the cache to prepare for this GJK-EPA run
+    clear_cache(i_b, gjk_state)
+
+    # No EPA penetration face yet; set to the nearest face index below if EPA runs.
+    gjk_state.nearest_face[i_b] = -1
+
+    # We use MuJoCo's GJK implementation when the compatibility mode is enabled
+    if qd.static(rigid_config.enable_mujoco_compatibility):
+        # If any one of the geometries is a sphere or capsule, which are sphere-swept primitives,
+        # we can shrink them to a point or line to detect shallow penetration faster
+        is_sphere_swept_geom_a, is_sphere_swept_geom_b = (
+            func_is_sphere_swept_geom(i_ga, dyn_info),
+            func_is_sphere_swept_geom(i_gb, dyn_info),
+        )
+        shrink_sphere = is_sphere_swept_geom_a or is_sphere_swept_geom_b
+
+        # Run GJK
+        for _ in range(2 if shrink_sphere else 1):
+            distance = func_gjk(
+                i_ga,
+                i_gb,
+                i_b,
+                pos_a,
+                quat_a,
+                pos_b,
+                quat_b,
+                collider_state,
+                gjk_state,
+                dyn_info,
+                gjk_info,
+                support_field_info,
+                rigid_config,
+                collider_config,
+                shrink_sphere,
+            )
+
+            if shrink_sphere:
+                # If we shrunk the sphere and capsule to point and line and the distance is larger than the collision
+                # epsilon, it means a shallow penetration. Thus we subtract the radius of the sphere and the capsule to
+                # get the actual distance. If the distance is smaller than the collision epsilon, it means a deep
+                # penetration, which requires the default GJK handling.
+                if distance > gjk_info.collision_eps[None]:
+                    radius_a, radius_b = 0.0, 0.0
+                    if is_sphere_swept_geom_a:
+                        radius_a = dyn_info.geoms.data[i_ga][0]
+                    if is_sphere_swept_geom_b:
+                        radius_b = dyn_info.geoms.data[i_gb][0]
+
+                    wa = gjk_state.witness.point_obj1[0, i_b]
+                    wb = gjk_state.witness.point_obj2[0, i_b]
+                    n = func_safe_normalize(wb - wa, gjk_info)
+
+                    gjk_state.distance[i_b] = distance - (radius_a + radius_b)
+                    gjk_state.witness.point_obj1[0, i_b] = wa + (radius_a * n)
+                    gjk_state.witness.point_obj2[0, i_b] = wb - (radius_b * n)
+
+                    break
+
+            # Only try shrinking the sphere once
+            shrink_sphere = False
+
+            distance = gjk_state.distance[i_b]
+            nsimplex = gjk_state.nsimplex[i_b]
+            collided = distance < gjk_info.collision_eps[None]
+
+            # To run EPA, we need following conditions:
+            # 1. We did not find min. distance with shrink_sphere flag
+            # 2. We have a valid GJK simplex (nsimplex > 0)
+            # 3. We have a collision (distance < collision_epsilon)
+            do_epa = (not shrink_sphere) and collided and (nsimplex > 0)
+
+            if do_epa:
+                # Initialize polytope
+                gjk_state.polytope.nverts[i_b] = 0
+                gjk_state.polytope.nfaces[i_b] = 0
+                gjk_state.polytope.nfaces_map[i_b] = 0
+                gjk_state.polytope.horizon_nedges[i_b] = 0
+
+                # Construct the initial polytope from the GJK simplex
+                polytope_flag = EPA_POLY_INIT_RETURN_CODE.SUCCESS
+                if nsimplex == 2:
+                    polytope_flag = func_epa_init_polytope_2d(
+                        i_ga,
+                        i_gb,
+                        i_b,
+                        pos_a,
+                        quat_a,
+                        pos_b,
+                        quat_b,
+                        collider_state,
+                        gjk_state,
+                        dyn_info,
+                        gjk_info,
+                        support_field_info,
+                        rigid_config,
+                        collider_config,
+                    )
+                elif nsimplex == 4:
+                    polytope_flag = func_epa_init_polytope_4d(i_b, gjk_state, gjk_info)
+
+                # Polytope 3D could be used as a fallback for 2D and 4D cases
+                if (
+                    nsimplex == 3
+                    or (polytope_flag == EPA_POLY_INIT_RETURN_CODE.P2_FALLBACK3)
+                    or (polytope_flag == EPA_POLY_INIT_RETURN_CODE.P4_FALLBACK3)
+                ):
+                    polytope_flag = func_epa_init_polytope_3d(
+                        i_ga,
+                        i_gb,
+                        i_b,
+                        pos_a,
+                        quat_a,
+                        pos_b,
+                        quat_b,
+                        collider_state,
+                        gjk_state,
+                        dyn_info,
+                        gjk_info,
+                        support_field_info,
+                        rigid_config,
+                        collider_config,
+                    )
+
+                # Assume touching. Zeroed only after the initialization above, whose 2-simplex path rejects a
+                # separated near-miss by reading the distance GJK reported (see func_epa_init_polytope_3d).
+                gjk_state.distance[i_b] = 0
+
+                # Run EPA from the polytope
+                if polytope_flag == EPA_POLY_INIT_RETURN_CODE.SUCCESS:
+                    i_f = func_epa(
+                        i_ga,
+                        i_gb,
+                        i_b,
+                        pos_a,
+                        quat_a,
+                        pos_b,
+                        quat_b,
+                        collider_state,
+                        gjk_state,
+                        dyn_info,
+                        gjk_info,
+                        support_field_info,
+                        rigid_config,
+                        collider_config,
+                    )
+                    gjk_state.nearest_face[i_b] = i_f
+
+                    if qd.static(gjk_config.enable_contact_patch):
+                        # The patch needs a valid nearest polytope face and two discrete geometries to clip.
+                        if i_f >= 0 and func_is_discrete_geoms(i_ga, i_gb, dyn_info):
+                            func_multi_contact(
+                                i_ga, i_gb, i_b, i_f, pos_a, quat_a, pos_b, quat_b, gjk_state, dyn_info, gjk_info
+                            )
+                            gjk_state.multi_contact_flag[i_b] = True
+    else:
+        gjk_flag = func_safe_gjk(
+            i_ga,
+            i_gb,
+            i_b,
+            pos_a,
+            quat_a,
+            pos_b,
+            quat_b,
+            collider_state,
+            gjk_state,
+            dyn_info,
+            rigid_info,
+            gjk_info,
+            support_field_info,
+            rigid_config,
+            collider_config,
+        )
+        if gjk_flag == GJK_RETURN_CODE.INTERSECT:
+            # Initialize polytope
+            gjk_state.polytope.nverts[i_b] = 0
+            gjk_state.polytope.nfaces[i_b] = 0
+            gjk_state.polytope.nfaces_map[i_b] = 0
+            gjk_state.polytope.horizon_nedges[i_b] = 0
+
+            # Construct the initial polytope from the GJK simplex
+            func_safe_epa_init(i_b, gjk_state, gjk_info)
+
+            # Run EPA from the polytope
+            gjk_state.nearest_face[i_b] = func_safe_epa(
+                i_ga,
+                i_gb,
+                i_b,
+                pos_a,
+                quat_a,
+                pos_b,
+                quat_b,
+                collider_state,
+                gjk_state,
+                dyn_info,
+                rigid_info,
+                gjk_info,
+                support_field_info,
+                rigid_config,
+                collider_config,
+            )
+
+            if qd.static(gjk_config.enable_contact_patch):
+                # The patch needs a valid nearest polytope face and two discrete geometries to clip.
+                i_f = gjk_state.nearest_face[i_b]
+                if i_f >= 0 and func_is_discrete_geoms(i_ga, i_gb, dyn_info):
+                    func_multi_contact(
+                        i_ga, i_gb, i_b, i_f, pos_a, quat_a, pos_b, quat_b, gjk_state, dyn_info, gjk_info
+                    )
+                    gjk_state.multi_contact_flag[i_b] = True
+
+    # Compute the final contact points and normals
+    n_contacts = 0
+    gjk_state.is_col[i_b] = gjk_state.distance[i_b] < 0.0
+    gjk_state.penetration[i_b] = -gjk_state.distance[i_b] if gjk_state.is_col[i_b] else 0.0
+
+    if gjk_state.is_col[i_b]:
+        for i in range(gjk_state.n_witness[i_b]):
+            w1 = gjk_state.witness.point_obj1[i, i_b]
+            w2 = gjk_state.witness.point_obj2[i, i_b]
+            contact_pos = 0.5 * (w1 + w2)
+
+            normal = w2 - w1
+            normal_len = normal.norm()
+            if normal_len < gjk_info.FLOAT_MIN[None]:
+                continue
+
+            normal = normal / normal_len
+
+            # The witness difference w2 - w1 of a shallow contact is a tiny vector blended from geom-scale support
+            # points, which fp32 rounding tilts by up to tens of degrees, catastrophic for grazing contacts between
+            # convex-decomposition pieces, and can even flip. The normal of the face nearest to the origin in the
+            # expanding polytope algorithm (EPA) is well-conditioned, pointing out of the Minkowski difference
+            # 'obj1 - obj2', opposite to w2 - w1. The witness normal remains when no polytope was built, and in
+            # MuJoCo-compatibility mode to reproduce its contact set exactly.
+            if qd.static(not rigid_config.enable_mujoco_compatibility):
+                i_f = gjk_state.nearest_face[i_b]
+                if i_f >= 0:
+                    normal = -gjk_state.polytope_faces.normal[i_f, i_b]
+
+            gjk_state.contact_pos[n_contacts, i_b] = contact_pos
+            gjk_state.normal[n_contacts, i_b] = normal
+            n_contacts += 1
+
+    gjk_state.n_contacts[i_b] = n_contacts
+    # If there are no contacts, we set the penetration and is_col to 0
+    # FIXME: When we use if statement here, it leads to a bug in some backends (e.g. x86 cpu). Need to investigate.
+    gjk_state.is_col[i_b] = False if n_contacts == 0 else gjk_state.is_col[i_b]
+    gjk_state.penetration[i_b] = 0.0 if n_contacts == 0 else gjk_state.penetration[i_b]
+
+
+@qd.func
+def func_gjk(
+    i_ga: int,
+    i_gb: int,
+    i_b: int,
+    pos_a: qd.types.vector(3),
+    quat_a: qd.types.vector(4),
+    pos_b: qd.types.vector(3),
+    quat_b: qd.types.vector(4),
+    collider_state: ColliderState,
+    gjk_state: GJKState,
+    dyn_info: DynInfo,
+    gjk_info: GJKInfo,
+    support_field_info: SupportFieldInfo,
+    rigid_config: qd.template(),
+    collider_config: qd.template(),
+    shrink_sphere: bool,
+):
+    """
+    GJK algorithm to compute the minimum distance between two convex objects.
+
+    This implementation is based on the MuJoCo implementation.
+
+    TODO: This implementation could be further improved by referencing the follow-up work shown below.
+
+    Parameters
+    ----------
+    shrink_sphere: bool
+        If True, use point and line support functions for sphere and capsule geometries, respectively. It is more
+        efficient and stable for shallow penetrations than the full GJK algorithm. However, if there is a deep
+        penetration, we have to fallback to the full GJK algorithm by setting this parameter to False.
+
+    .. seealso::
+    MuJoCo's original implementation:
+    https://github.com/google-deepmind/mujoco/blob/7dc7a349c5ba2db2d3f8ab50a367d08e2f1afbbc/src/engine/engine_collision_gjk.c#L171
+
+    Original paper:
+    Gilbert, Elmer G., Daniel W. Johnson, and S. Sathiya Keerthi.
+    "A fast procedure for computing the distance between complex objects in three-dimensional space."
+    IEEE Journal on Robotics and Automation 4.2 (2002): 193-203.
+
+    Further improvements:
+    Cameron, Stephen. "Enhancing GJK: Computing minimum and penetration distances between convex polyhedra."
+    Proceedings of international conference on robotics and automation. Vol. 4. IEEE, 1997.
+    https://www.cs.ox.ac.uk/people/stephen.cameron/distances/gjk2.4/
+
+    Montaut, Louis, et al. "Collision detection accelerated: An optimization perspective."
+    https://arxiv.org/abs/2205.09663
+    """
+    # Simplex index
+    n = gs.qd_int(0)
+    # Final number of simplex vertices
+    nsimplex = gs.qd_int(0)
+    # Number of witness points and distance
+    nx = gs.qd_int(0)
+    dist = gs.qd_float(0.0)
+    # Lambda for barycentric coordinates
+    _lambda = gs.qd_vec4(1.0, 0.0, 0.0, 0.0)
+    # Whether or not we need to compute the exact distance.
+    get_dist = shrink_sphere
+    # We can use GJK intersection algorithm only for collision detection if we do not have to compute the distance.
+    backup_gjk = not get_dist
+    # Support vector to compute the next support point.
+    support_vector = gs.qd_vec3(0.0, 0.0, 0.0)
+    support_vector_norm = gs.qd_float(0.0)
+    # Whether or not the main loop finished early because intersection or seperation was detected.
+    early_stop = False
+
+    # Set initial guess of support vector using the thread-local positions, which should be a non-zero vector.
+    approx_witness_point_obj1 = pos_a
+    approx_witness_point_obj2 = pos_b
+    support_vector = approx_witness_point_obj1 - approx_witness_point_obj2
+    if support_vector.dot(support_vector) < gjk_info.FLOAT_MIN_SQ[None]:
+        support_vector = gs.qd_vec3(1.0, 0.0, 0.0)
+
+    # Epsilon for convergence check.
+    epsilon = gs.qd_float(0.0)
+    if not func_is_discrete_geoms(i_ga, i_gb, dyn_info):
+        # If the objects are smooth, finite convergence is not guaranteed, so we need to set some epsilon
+        # to determine convergence.
+        epsilon = 0.5 * (gjk_info.tolerance[None] ** 2)
+
+    for i in range(gjk_info.gjk_max_iterations[None]):
+        # Compute the current support points
+        support_vector_norm = support_vector.norm()
+        if support_vector_norm < gjk_info.FLOAT_MIN[None]:
+            # If the support vector is too small, it means that origin is located in the Minkowski difference
+            # with high probability, so we can stop.
+            break
+
+        # Dir to compute the support point (pointing from obj1 to obj2)
+        dir = -support_vector * (1.0 / support_vector_norm)
+
+        (
+            gjk_state.simplex_vertex.obj1[n, i_b],
+            gjk_state.simplex_vertex.obj2[n, i_b],
+            gjk_state.simplex_vertex.local_obj1[n, i_b],
+            gjk_state.simplex_vertex.local_obj2[n, i_b],
+            gjk_state.simplex_vertex.id1[n, i_b],
+            gjk_state.simplex_vertex.id2[n, i_b],
+            gjk_state.simplex_vertex.mink[n, i_b],
+        ) = func_support(
+            i_ga,
+            i_gb,
+            i_b,
+            dir,
+            pos_a,
+            quat_a,
+            pos_b,
+            quat_b,
+            collider_state,
+            gjk_state,
+            dyn_info,
+            gjk_info,
+            support_field_info,
+            rigid_config,
+            collider_config,
+            shrink_sphere,
+        )
+
+        # Early stopping based on Frank-Wolfe duality gap. We need to find the minimum [support_vector_norm],
+        # and if we denote it as [x], the problem formulation is: min_x |x|^2.
+        # If we denote f(x) = |x|^2, then the Frank-Wolfe duality gap is:
+        # |x - x_min|^2 <= < grad f(x), x - s> = < 2x, x - s >,
+        # where s is the vertex of the Minkowski difference found by x. Here < 2x, x - s > is guaranteed to be
+        # non-negative, and 2 is cancelled out in the definition of the epsilon.
+        x_k = support_vector
+        s_k = gjk_state.simplex_vertex.mink[n, i_b]
+        diff = x_k - s_k
+        if diff.dot(x_k) < epsilon:
+            # Convergence condition is met, we can stop.
+            if i == 0:
+                n = 1
+            break
+
+        # Check if the objects are separated using support vector
+        if not get_dist:
+            is_separated = x_k.dot(s_k) > 0.0
+            if is_separated:
+                nsimplex = 0
+                nx = 0
+                dist = gjk_info.FLOAT_MAX[None]
+                early_stop = True
+                break
+
+        if n == 3 and backup_gjk:
+            # Tetrahedron is generated, try to detect collision if possible.
+            intersect_code = func_gjk_intersect(
+                i_ga,
+                i_gb,
+                i_b,
+                pos_a,
+                quat_a,
+                pos_b,
+                quat_b,
+                collider_state,
+                gjk_state,
+                dyn_info,
+                gjk_info,
+                support_field_info,
+                rigid_config,
+                collider_config,
+            )
+            if intersect_code == GJK_RETURN_CODE.SEPARATED:
+                # No intersection, objects are separated
+                nx = 0
+                dist = gjk_info.FLOAT_MAX[None]
+                nsimplex = 0
+                early_stop = True
+                break
+            elif intersect_code == GJK_RETURN_CODE.INTERSECT:
+                # Intersection found
+                nx = 0
+                dist = 0.0
+                nsimplex = 4
+                early_stop = True
+                break
+            else:
+                # Since gjk_intersect failed (e.g. origin is on the simplex face), fallback to distance computation
+                backup_gjk = False
+
+        # Compute the barycentric coordinates of the closest point to the origin in the simplex
+        _lambda = func_gjk_subdistance(i_b, n + 1, gjk_state, gjk_info)
+
+        # Remove vertices from the simplex with zero barycentric coordinates
+        n = 0
+        for j in qd.static(range(4)):
+            if _lambda[j] > 0:
+                gjk_state.simplex_vertex.obj1[n, i_b] = gjk_state.simplex_vertex.obj1[j, i_b]
+                gjk_state.simplex_vertex.obj2[n, i_b] = gjk_state.simplex_vertex.obj2[j, i_b]
+                gjk_state.simplex_vertex.local_obj1[n, i_b] = gjk_state.simplex_vertex.local_obj1[j, i_b]
+                gjk_state.simplex_vertex.local_obj2[n, i_b] = gjk_state.simplex_vertex.local_obj2[j, i_b]
+                gjk_state.simplex_vertex.id1[n, i_b] = gjk_state.simplex_vertex.id1[j, i_b]
+                gjk_state.simplex_vertex.id2[n, i_b] = gjk_state.simplex_vertex.id2[j, i_b]
+                gjk_state.simplex_vertex.mink[n, i_b] = gjk_state.simplex_vertex.mink[j, i_b]
+                _lambda[n] = _lambda[j]
+                n += 1
+
+        # Should not occur
+        if n < 1:
+            nsimplex = 0
+            nx = 0
+            dist = gjk_info.FLOAT_MAX[None]
+            early_stop = True
+            break
+
+        # Get the next support vector
+        next_support_vector = func_simplex_vertex_linear_comb(i_b, 2, 0, 1, 2, 3, n, _lambda, gjk_state)
+        if gu.qd_is_equal_vec(next_support_vector, support_vector, gjk_info.FLOAT_MIN[None]):
+            # If the next support vector is equal to the previous one, we converged to the minimum distance
+            break
+
+        support_vector = next_support_vector
+
+        if n == 4:
+            # We have a tetrahedron containing the origin, so we can return early. This is because only when
+            # the origin is inside the tetrahedron, the barycentric coordinates are all positive. While MuJoCo
+            # does not set the [support_vector_norm] to zero as we do, it is necessary, because otherwise the
+            # [support_vector_norm] could be non-zero value even if there is contact.
+            support_vector_norm = 0
+            break
+
+    if not early_stop:
+        # If [get_dist] was True and there was no numerical error, [return_code] would be SUCCESS.
+        nx = 1
+        nsimplex = n
+        dist = support_vector_norm
+
+        # Compute witness points
+        for i in range(2):
+            witness_point = func_simplex_vertex_linear_comb(i_b, i, 0, 1, 2, 3, nsimplex, _lambda, gjk_state)
+            if i == 0:
+                gjk_state.witness.point_obj1[0, i_b] = witness_point
+            else:
+                gjk_state.witness.point_obj2[0, i_b] = witness_point
+
+    gjk_state.n_witness[i_b] = nx
+    gjk_state.distance[i_b] = dist
+    gjk_state.nsimplex[i_b] = nsimplex
+
+    return gjk_state.distance[i_b]
+
+
+@qd.func
+def func_gjk_intersect(
+    i_ga: int,
+    i_gb: int,
+    i_b: int,
+    pos_a: qd.types.vector(3),
+    quat_a: qd.types.vector(4),
+    pos_b: qd.types.vector(3),
+    quat_b: qd.types.vector(4),
+    collider_state: ColliderState,
+    gjk_state: GJKState,
+    dyn_info: DynInfo,
+    gjk_info: GJKInfo,
+    support_field_info: SupportFieldInfo,
+    rigid_config: qd.template(),
+    collider_config: qd.template(),
+):
+    """
+    Check if the two objects intersect using the GJK algorithm.
+
+    This function refines the simplex until it contains the origin or it is determined that the objects are
+    separated. It is used to check if the objects intersect, not to find the minimum distance between them.
+    """
+    # Copy simplex to temporary storage
+    for i in qd.static(range(4)):
+        gjk_state.simplex_vertex_intersect.obj1[i, i_b] = gjk_state.simplex_vertex.obj1[i, i_b]
+        gjk_state.simplex_vertex_intersect.obj2[i, i_b] = gjk_state.simplex_vertex.obj2[i, i_b]
+        gjk_state.simplex_vertex_intersect.local_obj1[i, i_b] = gjk_state.simplex_vertex.local_obj1[i, i_b]
+        gjk_state.simplex_vertex_intersect.local_obj2[i, i_b] = gjk_state.simplex_vertex.local_obj2[i, i_b]
+        gjk_state.simplex_vertex_intersect.id1[i, i_b] = gjk_state.simplex_vertex.id1[i, i_b]
+        gjk_state.simplex_vertex_intersect.id2[i, i_b] = gjk_state.simplex_vertex.id2[i, i_b]
+        gjk_state.simplex_vertex_intersect.mink[i, i_b] = gjk_state.simplex_vertex.mink[i, i_b]
+
+    simplex_order = qd.Vector([0, 1, 2, 3], dt=gs.qd_int)
+
+    flag = GJK_RETURN_CODE.NUM_ERROR
+    for i in range(gjk_info.gjk_max_iterations[None]):
+        # Compute normal and signed distance of the triangle faces of the simplex with respect to the origin.
+        # These normals are supposed to point outwards from the simplex.
+        # If the origin is inside the plane, [sdist] will be positive.
+        is_sdist_all_zero = True
+        # Face j is the triangle opposite to vertex j. Face 3 is listed apart because the cyclic formula of the others
+        # would include vertex 3.
+        for j in range(4):
+            s0, s1, s2 = simplex_order[(j + 2) % 3], simplex_order[(j + 1) % 3], simplex_order[3]
+            if j == 3:
+                s0, s1, s2 = simplex_order[0], simplex_order[1], simplex_order[2]
+
+            n, s = func_gjk_triangle_info(i_b, s0, s1, s2, gjk_state, gjk_info)
+
+            gjk_state.simplex_buffer_intersect.normal[j, i_b] = n
+            gjk_state.simplex_buffer_intersect.sdist[j, i_b] = s
+
+            if qd.abs(s) > gjk_info.FLOAT_MIN[None]:
+                is_sdist_all_zero = False
+
+        # If the origin is strictly on any affine hull of the faces, convergence will fail, so ignore this case
+        if is_sdist_all_zero:
+            break
+
+        # Find the face with the smallest signed distance. We need to find [min_i] for the next iteration.
+        min_i = 0
+        for j in qd.static(range(1, 4)):
+            if gjk_state.simplex_buffer_intersect.sdist[j, i_b] < gjk_state.simplex_buffer_intersect.sdist[min_i, i_b]:
+                min_i = j
+
+        i_s_min = simplex_order[min_i]
+        min_normal = gjk_state.simplex_buffer_intersect.normal[min_i, i_b]
+        min_sdist = gjk_state.simplex_buffer_intersect.sdist[min_i, i_b]
+
+        # If origin is inside the simplex, the signed distances will all be positive
+        if min_sdist >= 0:
+            # Origin is inside the simplex, so we can stop
+            flag = GJK_RETURN_CODE.INTERSECT
+
+            # Copy the temporary simplex to the main simplex
+            for j in qd.static(range(4)):
+                i_s = simplex_order[j]
+                gjk_state.simplex_vertex.obj1[j, i_b] = gjk_state.simplex_vertex_intersect.obj1[i_s, i_b]
+                gjk_state.simplex_vertex.obj2[j, i_b] = gjk_state.simplex_vertex_intersect.obj2[i_s, i_b]
+                gjk_state.simplex_vertex.local_obj1[j, i_b] = gjk_state.simplex_vertex_intersect.local_obj1[i_s, i_b]
+                gjk_state.simplex_vertex.local_obj2[j, i_b] = gjk_state.simplex_vertex_intersect.local_obj2[i_s, i_b]
+                gjk_state.simplex_vertex.id1[j, i_b] = gjk_state.simplex_vertex_intersect.id1[i_s, i_b]
+                gjk_state.simplex_vertex.id2[j, i_b] = gjk_state.simplex_vertex_intersect.id2[i_s, i_b]
+                gjk_state.simplex_vertex.mink[j, i_b] = gjk_state.simplex_vertex_intersect.mink[i_s, i_b]
+            break
+
+        # Replace the worst vertex (which has the smallest signed distance) with new candidate
+        (
+            gjk_state.simplex_vertex_intersect.obj1[i_s_min, i_b],
+            gjk_state.simplex_vertex_intersect.obj2[i_s_min, i_b],
+            gjk_state.simplex_vertex_intersect.local_obj1[i_s_min, i_b],
+            gjk_state.simplex_vertex_intersect.local_obj2[i_s_min, i_b],
+            gjk_state.simplex_vertex_intersect.id1[i_s_min, i_b],
+            gjk_state.simplex_vertex_intersect.id2[i_s_min, i_b],
+            gjk_state.simplex_vertex_intersect.mink[i_s_min, i_b],
+        ) = func_support(
+            i_ga,
+            i_gb,
+            i_b,
+            min_normal,
+            pos_a,
+            quat_a,
+            pos_b,
+            quat_b,
+            collider_state,
+            gjk_state,
+            dyn_info,
+            gjk_info,
+            support_field_info,
+            rigid_config,
+            collider_config,
+            shrink_sphere=False,
+        )
+
+        # Check if the origin is strictly outside of the Minkowski difference (which means there is no collision)
+        new_minkowski = gjk_state.simplex_vertex_intersect.mink[i_s_min, i_b]
+
+        is_no_collision = new_minkowski.dot(min_normal) < 0
+        if is_no_collision:
+            flag = GJK_RETURN_CODE.SEPARATED
+            break
+
+        # Swap vertices in the simplex to retain orientation
+        m = (min_i + 1) % 4
+        n = (min_i + 2) % 4
+        swap = simplex_order[m]
+        simplex_order[m] = simplex_order[n]
+        simplex_order[n] = swap
+
+    return flag
+
+
+@qd.func
+def func_gjk_triangle_info(i_b: int, i_va: int, i_vb: int, i_vc: int, gjk_state: GJKState, gjk_info: GJKInfo):
+    """
+    Compute normal and signed distance of the triangle face on the simplex from the origin.
+    """
+    vertex_1 = gjk_state.simplex_vertex_intersect.mink[i_va, i_b]
+    vertex_2 = gjk_state.simplex_vertex_intersect.mink[i_vb, i_b]
+    vertex_3 = gjk_state.simplex_vertex_intersect.mink[i_vc, i_b]
+
+    normal = (vertex_3 - vertex_1).cross(vertex_2 - vertex_1)
+    normal_length = normal.norm()
+
+    sdist = 0.0
+    if (normal_length > gjk_info.FLOAT_MIN[None]) and (normal_length < gjk_info.FLOAT_MAX[None]):
+        normal = normal * (1.0 / normal_length)
+        sdist = normal.dot(vertex_1)
+    else:
+        # If the normal length is unstable, return max distance.
+        sdist = gjk_info.FLOAT_MAX[None]
+
+    return normal, sdist
+
+
+@qd.func
+def func_gjk_subdistance(i_b: int, n: int, gjk_state: GJKState, gjk_info: GJKInfo):
+    """
+    Compute the barycentric coordinates of the closest point to the origin in the n-simplex.
+
+    .. seealso::
+    Montanari, Mattia, Nik Petrinic, and Ettore Barbieri. "Improving the GJK algorithm for faster and more reliable
+    distance queries between convex objects." ACM Transactions on Graphics (TOG) 36.3 (2017): 1-17.
+    https://dl.acm.org/doi/10.1145/3072959.3083724
+    """
+    _lambda = qd.math.vec4(1.0, 0.0, 0.0, 0.0)
+
+    # Whether or not the subdistance was computed successfully for the n-simplex.
+    flag = RETURN_CODE.SUCCESS
+
+    dmin = gjk_info.FLOAT_MAX[None]
+
+    if n == 4:
+        _lambda, flag3d = func_gjk_subdistance_3d(i_b, 0, 1, 2, 3, gjk_state)
+        flag = flag3d
+
+    if (flag == RETURN_CODE.FAIL) or n == 3:
+        failed_3d = n == 4
+        num_iter = 1
+        if failed_3d:
+            # Iterate through 4 faces of the tetrahedron
+            num_iter = 4
+
+        for i in range(num_iter):
+            k_1, k_2, k_3 = i, (i + 1) % 4, (i + 2) % 4
+            _lambda2d, flag2d = func_gjk_subdistance_2d(i_b, k_1, k_2, k_3, gjk_state, gjk_info)
+
+            if failed_3d:
+                if flag2d == RETURN_CODE.SUCCESS:
+                    closest_point = func_simplex_vertex_linear_comb(i_b, 2, k_1, k_2, k_3, 0, 3, _lambda2d, gjk_state)
+                    d = closest_point.dot(closest_point)
+                    if d < dmin:
+                        dmin = d
+                        _lambda.fill(0.0)
+                        _lambda[k_1] = _lambda2d[0]
+                        _lambda[k_2] = _lambda2d[1]
+                        _lambda[k_3] = _lambda2d[2]
+            else:
+                if flag2d == RETURN_CODE.SUCCESS:
+                    _lambda = _lambda2d
+                flag = flag2d
+
+    if (flag == RETURN_CODE.FAIL) or n == 2:
+        failed_3d = n == 4
+        failed_2d = n == 3
+
+        num_iter = 1
+        if failed_3d:
+            # Iterate through 6 edges of the tetrahedron
+            num_iter = 6
+        elif failed_2d:
+            # Iterate through 3 edges of the triangle
+            num_iter = 3
+
+        for i in range(num_iter):
+            k_1, k_2 = i, (i + 1) % 3
+            if i >= 3:
+                k_1, k_2 = i - 3, 3
+
+            _lambda1d = func_gjk_subdistance_1d(i_b, k_1, k_2, gjk_state)
+
+            if failed_3d or failed_2d:
+                closest_point = func_simplex_vertex_linear_comb(i_b, 2, k_1, k_2, 0, 0, 2, _lambda1d, gjk_state)
+                d = closest_point.dot(closest_point)
+                if d < dmin:
+                    dmin = d
+                    _lambda.fill(0.0)
+                    _lambda[k_1] = _lambda1d[0]
+                    _lambda[k_2] = _lambda1d[1]
+            else:
+                _lambda = _lambda1d
+
+    return _lambda
+
+
+@qd.func
+def func_gjk_subdistance_3d(i_b: int, i_s1: int, i_s2: int, i_s3: int, i_s4: int, gjk_state: GJKState):
+    """
+    Compute the barycentric coordinates of the closest point to the origin in the 3-simplex (tetrahedron).
+    """
+    flag = RETURN_CODE.FAIL
+    _lambda = gs.qd_vec4(0, 0, 0, 0)
+
+    # Simplex vertices
+    s1 = gjk_state.simplex_vertex.mink[i_s1, i_b]
+    s2 = gjk_state.simplex_vertex.mink[i_s2, i_b]
+    s3 = gjk_state.simplex_vertex.mink[i_s3, i_b]
+    s4 = gjk_state.simplex_vertex.mink[i_s4, i_b]
+
+    # Compute the cofactors to find det(M), which corresponds to the signed volume of the tetrahedron
+    Cs = qd.math.vec4(0.0, 0.0, 0.0, 0.0)
+    for i in range(4):
+        v1, v2, v3 = s2, s3, s4
+        if i == 1:
+            v1, v2, v3 = s1, s3, s4
+        elif i == 2:
+            v1, v2, v3 = s1, s2, s4
+        elif i == 3:
+            v1, v2, v3 = s1, s2, s3
+        Cs[i] = func_det3(v1, v2, v3)
+    Cs[0], Cs[2] = -Cs[0], -Cs[2]
+    m_det = Cs.sum()
+
+    # Compare sign of the cofactors with the determinant
+    scs = gs.qd_ivec4(0, 0, 0, 0)
+    for i in range(4):
+        scs[i] = gu.qd_compare_sign(Cs[i], m_det)
+
+    if scs.all():
+        # If all barycentric coordinates are positive, the origin is inside the tetrahedron
+        _lambda = Cs / m_det
+        flag = RETURN_CODE.SUCCESS
+
+    return _lambda, flag
+
+
+@qd.func
+def func_gjk_subdistance_2d(i_b: int, i_s1: int, i_s2: int, i_s3: int, gjk_state: GJKState, gjk_info: GJKInfo):
+    """
+    Compute the barycentric coordinates of the closest point to the origin in the 2-simplex (triangle).
+    """
+    _lambda = qd.math.vec4(0, 0, 0, 0)
+    flag = RETURN_CODE.FAIL
+
+    # Project origin onto affine hull of the simplex (triangle)
+    proj_orig, proj_flag = func_project_origin_to_plane(
+        gjk_state.simplex_vertex.mink[i_s1, i_b],
+        gjk_state.simplex_vertex.mink[i_s2, i_b],
+        gjk_state.simplex_vertex.mink[i_s3, i_b],
+        gjk_info,
+    )
+
+    if proj_flag == RETURN_CODE.SUCCESS:
+        # We should find the barycentric coordinates of the projected point, but the linear system is not square:
+        # [ s1.x, s2.x, s3.x ] [ l1 ] = [ proj_o.x ]
+        # [ s1.y, s2.y, s3.y ] [ l2 ] = [ proj_o.y ]
+        # [ s1.z, s2.z, s3.z ] [ l3 ] = [ proj_o.z ]
+        # [ 1,    1,    1,   ] [ ?  ] = [ 1.0 ]
+        # So we remove one row before solving the system. We exclude the axis with the largest projection of the
+        # simplex using the minors of the above linear system.
+        s1 = gjk_state.simplex_vertex.mink[i_s1, i_b]
+        s2 = gjk_state.simplex_vertex.mink[i_s2, i_b]
+        s3 = gjk_state.simplex_vertex.mink[i_s3, i_b]
+
+        ms = gs.qd_vec3(
+            s2[1] * s3[2] - s2[2] * s3[1] - s1[1] * s3[2] + s1[2] * s3[1] + s1[1] * s2[2] - s1[2] * s2[1],
+            s2[0] * s3[2] - s2[2] * s3[0] - s1[0] * s3[2] + s1[2] * s3[0] + s1[0] * s2[2] - s1[2] * s2[0],
+            s2[0] * s3[1] - s2[1] * s3[0] - s1[0] * s3[1] + s1[1] * s3[0] + s1[0] * s2[1] - s1[1] * s2[0],
+        )
+        absms = qd.abs(ms)
+
+        m_max = 0.0
+        s1_2d, s2_2d, s3_2d = gs.qd_vec2(0, 0), gs.qd_vec2(0, 0), gs.qd_vec2(0, 0)
+        proj_orig_2d = gs.qd_vec2(0, 0)
+
+        for i in range(3):
+            if absms[i] >= absms[(i + 1) % 3] and absms[i] >= absms[(i + 2) % 3]:
+                # Remove the i-th row from the linear system
+                m_max = ms[i]
+
+                i0, i1 = (i + 1) % 3, (i + 2) % 3
+                if i == 1:
+                    i0, i1 = i1, i0
+
+                s1_2d[0], s1_2d[1] = s1[i0], s1[i1]
+                s2_2d[0], s2_2d[1] = s2[i0], s2[i1]
+                s3_2d[0], s3_2d[1] = s3[i0], s3[i1]
+                proj_orig_2d[0] = proj_orig[i0]
+                proj_orig_2d[1] = proj_orig[i1]
+                break
+
+        # Now we find the barycentric coordinates of the projected point by solving the linear system:
+        # [ s1_2d.x, s2_2d.x, s3_2d.x ] [ l1 ] = [ proj_orig_2d.x ]
+        # [ s1_2d.y, s2_2d.y, s3_2d.y ] [ l2 ] = [ proj_orig_2d.y ]
+        # [ 1,       1,       1,      ] [ l3 ] = [ 1.0 ]
+        cs = gs.qd_vec3(0, 0, 0)
+        for i in range(3):
+            s2d0, s2d1 = s2_2d, s3_2d
+            if i == 1:
+                s2d0, s2d1 = s3_2d, s1_2d
+            elif i == 2:
+                s2d0, s2d1 = s1_2d, s2_2d
+            # Corresponds to the signed area of 2-simplex (triangle): (proj_orig_2d, s2d0, s2d1)
+            cs[i] = (
+                proj_orig_2d[0] * s2d0[1]
+                + proj_orig_2d[1] * s2d1[0]
+                + s2d0[0] * s2d1[1]
+                - proj_orig_2d[0] * s2d1[1]
+                - proj_orig_2d[1] * s2d0[0]
+                - s2d1[0] * s2d0[1]
+            )
+
+        # Compare sign of the cofactors with the determinant
+        scs = gs.qd_ivec3(0, 0, 0)
+        for i in range(3):
+            scs[i] = gu.qd_compare_sign(cs[i], m_max)
+
+        if scs.all():
+            # If all barycentric coordinates are positive, the origin is inside the 2-simplex (triangle)
+            for i in qd.static(range(3)):
+                _lambda[i] = cs[i] / m_max
+            flag = RETURN_CODE.SUCCESS
+
+    return _lambda, flag
+
+
+@qd.func
+def func_gjk_subdistance_1d(i_b: int, i_s1: int, i_s2: int, gjk_state: GJKState):
+    """
+    Compute the barycentric coordinates of the closest point to the origin in the 1-simplex (line segment).
+    """
+    _lambda = gs.qd_vec4(0, 0, 0, 0)
+
+    s1 = gjk_state.simplex_vertex.mink[i_s1, i_b]
+    s2 = gjk_state.simplex_vertex.mink[i_s2, i_b]
+    p_o = func_project_origin_to_line(s1, s2)
+
+    mu_max = 0.0
+    index = -1
+    for i in range(3):
+        mu = s1[i] - s2[i]
+        if qd.abs(mu) >= qd.abs(mu_max):
+            mu_max = mu
+            index = i
+
+    C1 = p_o[index] - s2[index]
+    C2 = s1[index] - p_o[index]
+
+    # Determine if projection of origin lies inside 1-simplex
+    if gu.qd_compare_sign(mu_max, C1) and gu.qd_compare_sign(mu_max, C2):
+        _lambda[0] = C1 / mu_max
+        _lambda[1] = C2 / mu_max
+    else:
+        _lambda[0] = 0.0
+        _lambda[1] = 1.0
+
+    return _lambda
+
+
+@qd.func
+def func_is_sphere_swept_geom(i_g: int, dyn_info: DynInfo):
+    """
+    Check if the given geoms are sphere-swept geometries.
+    """
+    geom_type = dyn_info.geoms.type[i_g]
+    return geom_type == gs.GEOM_TYPE.SPHERE or geom_type == gs.GEOM_TYPE.CAPSULE
+
+
+@qd.func
+def func_project_origin_to_line(v1: qd.types.vector(3), v2: qd.types.vector(3)):
+    """
+    Project the origin onto the line defined by the simplex vertices.
+
+    P = v2 - ((v1 * diff) / (diff * diff)) * diff
+    """
+    diff = v2 - v1
+    k = v2.dot(diff) / diff.dot(diff)
+    P = v2 - k * diff
+
+    return P
+
+
+@qd.func
+def func_simplex_vertex_linear_comb(
+    i_b: int,
+    i_v: int,
+    i_s1: int,
+    i_s2: int,
+    i_s3: int,
+    i_s4: int,
+    n: int,
+    _lambda: qd.types.vector(4),
+    gjk_state: GJKState,
+):
+    """
+    Compute the linear combination of the simplex vertices
+
+    Parameters:
+    ----------
+    i_v: int
+        Which vertex to use (0: obj1, 1: obj2, 2: minkowski)
+    n: int
+        Number of vertices to combine, combine the first n vertices
+    """
+    res = gs.qd_vec3(0, 0, 0)
+
+    s1 = gjk_state.simplex_vertex.obj1[i_s1, i_b]
+    s2 = gjk_state.simplex_vertex.obj1[i_s2, i_b]
+    s3 = gjk_state.simplex_vertex.obj1[i_s3, i_b]
+    s4 = gjk_state.simplex_vertex.obj1[i_s4, i_b]
+    if i_v == 1:
+        s1 = gjk_state.simplex_vertex.obj2[i_s1, i_b]
+        s2 = gjk_state.simplex_vertex.obj2[i_s2, i_b]
+        s3 = gjk_state.simplex_vertex.obj2[i_s3, i_b]
+        s4 = gjk_state.simplex_vertex.obj2[i_s4, i_b]
+    elif i_v == 2:
+        s1 = gjk_state.simplex_vertex.mink[i_s1, i_b]
+        s2 = gjk_state.simplex_vertex.mink[i_s2, i_b]
+        s3 = gjk_state.simplex_vertex.mink[i_s3, i_b]
+        s4 = gjk_state.simplex_vertex.mink[i_s4, i_b]
+
+    c1 = _lambda[0]
+    c2 = _lambda[1]
+    c3 = _lambda[2]
+    c4 = _lambda[3]
+
+    if n == 1:
+        res = s1 * c1
+    elif n == 2:
+        res = s1 * c1 + s2 * c2
+    elif n == 3:
+        res = s1 * c1 + s2 * c2 + s3 * c3
+    else:
+        res = s1 * c1 + s2 * c2 + s3 * c3 + s4 * c4
+    return res
+
+
+@qd.func
+def func_safe_gjk(
+    i_ga: int,
+    i_gb: int,
+    i_b: int,
+    pos_a: qd.types.vector(3),
+    quat_a: qd.types.vector(4),
+    pos_b: qd.types.vector(3),
+    quat_b: qd.types.vector(4),
+    collider_state: ColliderState,
+    gjk_state: GJKState,
+    dyn_info: DynInfo,
+    rigid_info: RigidInfo,
+    gjk_info: GJKInfo,
+    support_field_info: SupportFieldInfo,
+    rigid_config: qd.template(),
+    collider_config: qd.template(),
+):
+    """
+    Safe GJK algorithm to compute the minimum distance between two convex objects.
+    using thread-local pos/quat for both geometries.
+
+    Thread-safety note: Geometry indices `i_ga` and `i_gb` are only used for read-only
+    metadata access (checking geometry types via `func_is_discrete_geoms`) and passing to
+    support functions. They do not access `geoms_state.pos` or `geoms_state.quat`.
+
+    This implementation is safer than the one based on the MuJoCo implementation for the following reasons:
+    1) It guarantees that the origin is strictly inside the tetrahedron when the intersection is detected.
+    2) It guarantees to generate a non-degenerate tetrahedron if there is no numerical error, which is necessary
+    for the following EPA algorithm to work correctly.
+    3) When computing the face normals on the simplex, it uses a more robust method than using the origin.
+
+    TODO: This implementation could be improved by using shrink_sphere option as the MuJoCo implementation does.
+    TODO: This implementation could be further improved by referencing the follow-up work shown below.
+
+    .. seealso::
+    Original paper:
+    Gilbert, Elmer G., Daniel W. Johnson, and S. Sathiya Keerthi.
+    "A fast procedure for computing the distance between complex objects in three-dimensional space."
+    IEEE Journal on Robotics and Automation 4.2 (2002): 193-203.
+
+    Further improvements:
+    Cameron, Stephen. "Enhancing GJK: Computing minimum and penetration distances between convex polyhedra."
+    Proceedings of international conference on robotics and automation. Vol. 4. IEEE, 1997.
+    https://www.cs.ox.ac.uk/people/stephen.cameron/distances/gjk2.4/
+
+    Montaut, Louis, et al. "Collision detection accelerated: An optimization perspective."
+    https://arxiv.org/abs/2205.09663
+    """
+    # Every stage (see GJK_STAGE in constants.py) goes through the single support query of the loop below
+    gjk_state.simplex.nverts[i_b] = 0
+    gjk_flag = GJK_RETURN_CODE.SEPARATED
+    stage = GJK_STAGE.INITIAL_VERTEX
+    i_s = 0
+    n_iters = 0
+    i_search = 0
+    search_dir = qd.Vector.zero(gs.qd_float, 3)
+    min_normal = qd.Vector.zero(gs.qd_float, 3)
+    # Bounded by the 4 initial vertices, the 2 more queries of the last one when searched again (only a triangle gives a
+    # search direction), the iterations, and the pass that finds the iterations exhausted
+    for _ in range(7 + gjk_info.gjk_max_iterations[None]):
+        dir = qd.Vector.zero(gs.qd_float, 3)
+        if stage == GJK_STAGE.INITIAL_VERTEX:
+            dir[2 - i_s // 2] = 1.0 - 2.0 * (i_s % 2)
+        elif stage == GJK_STAGE.VERTEX_SEARCH:
+            dir = search_dir if i_search == 0 else -search_dir
+        elif stage == GJK_STAGE.ITERATE and n_iters == gjk_info.gjk_max_iterations[None]:
+            stage = GJK_STAGE.DONE
+        elif stage == GJK_STAGE.ITERATE:
+            # Compute normal and signed distance of the triangle faces of the simplex with respect to the origin. These
+            # normals are supposed to point outwards from the simplex. If the origin is inside the plane, [sdist] will
+            # be positive. Faces are indexed as in func_gjk_intersect.
+            for j in range(4):
+                s0, s1, s2 = (j + 2) % 3, (j + 1) % 3, 3
+                if j == 3:
+                    s0, s1, s2 = 0, 1, 2
+
+                normal, sdist = func_safe_gjk_triangle_info(i_b, s0, s1, s2, j, gjk_state)
+
+                gjk_state.simplex_buffer.normal[j, i_b] = normal
+                gjk_state.simplex_buffer.sdist[j, i_b] = sdist
+
+            # Find the face with the smallest signed distance, the vertex opposite to it being the one to replace
+            i_s_min = 0
+            for j in qd.static(range(1, 4)):
+                if gjk_state.simplex_buffer.sdist[j, i_b] < gjk_state.simplex_buffer.sdist[i_s_min, i_b]:
+                    i_s_min = j
+
+            min_normal = gjk_state.simplex_buffer.normal[i_s_min, i_b]
+            min_sdist = gjk_state.simplex_buffer.sdist[i_s_min, i_b]
+
+            # If origin is inside the simplex, the signed distances will all be positive
+            if min_sdist >= 0:
+                gjk_flag = GJK_RETURN_CODE.INTERSECT
+                stage = GJK_STAGE.DONE
+            else:
+                # Move vertex 3 into the slot of the vertex to replace, the new candidate taking slot 3
+                gjk_state.simplex.nverts[i_b] = 3
+                if i_s_min != 3:
+                    gjk_state.simplex_vertex.obj1[i_s_min, i_b] = gjk_state.simplex_vertex.obj1[3, i_b]
+                    gjk_state.simplex_vertex.obj2[i_s_min, i_b] = gjk_state.simplex_vertex.obj2[3, i_b]
+                    gjk_state.simplex_vertex.local_obj1[i_s_min, i_b] = gjk_state.simplex_vertex.local_obj1[3, i_b]
+                    gjk_state.simplex_vertex.local_obj2[i_s_min, i_b] = gjk_state.simplex_vertex.local_obj2[3, i_b]
+                    gjk_state.simplex_vertex.id1[i_s_min, i_b] = gjk_state.simplex_vertex.id1[3, i_b]
+                    gjk_state.simplex_vertex.id2[i_s_min, i_b] = gjk_state.simplex_vertex.id2[3, i_b]
+                    gjk_state.simplex_vertex.mink[i_s_min, i_b] = gjk_state.simplex_vertex.mink[3, i_b]
+                # Find a new candidate vertex to replace the worst vertex (which has the smallest signed distance)
+                dir = min_normal
+        if stage == GJK_STAGE.DONE:
+            break
+
+        obj1, obj2, local_obj1, local_obj2, id1, id2, minkowski = func_safe_gjk_support(
+            i_ga,
+            i_gb,
+            i_b,
+            pos_a,
+            quat_a,
+            pos_b,
+            quat_b,
+            dir,
+            collider_state,
+            gjk_state,
+            dyn_info,
+            rigid_info,
+            gjk_info,
+            support_field_info,
+            rigid_config,
+            collider_config,
+        )
+
+        is_vertex_valid = func_is_new_simplex_vertex_valid(i_b, id1, id2, minkowski, gjk_state, gjk_info)
+        if stage == GJK_STAGE.ITERATE:
+            # A duplicate or degenerate new vertex, or the origin outside of the Minkowski difference, means separation
+            if not is_vertex_valid or minkowski.dot(min_normal) < 0.0:
+                stage = GJK_STAGE.DONE
+            else:
+                gjk_state.simplex_vertex.obj1[3, i_b] = obj1
+                gjk_state.simplex_vertex.obj2[3, i_b] = obj2
+                gjk_state.simplex_vertex.local_obj1[3, i_b] = local_obj1
+                gjk_state.simplex_vertex.local_obj2[3, i_b] = local_obj2
+                gjk_state.simplex_vertex.id1[3, i_b] = id1
+                gjk_state.simplex_vertex.id2[3, i_b] = id2
+                gjk_state.simplex_vertex.mink[3, i_b] = minkowski
+                gjk_state.simplex.nverts[i_b] = 4
+                n_iters += 1
+        else:
+            if stage == GJK_STAGE.VERTEX_SEARCH:
+                if not is_vertex_valid:
+                    i_search += 1
+                    if i_search == 2:
+                        # No valid vertex lies along either search direction
+                        stage = GJK_STAGE.DONE
+            elif not is_vertex_valid:
+                # Fall back to a search of a valid vertex: brute force over the vertices of discrete geometries, or
+                # along the normal of the triangle so far otherwise.
+                if func_is_discrete_geoms(i_ga, i_gb, dyn_info):
+                    obj1, obj2, local_obj1, local_obj2, id1, id2, minkowski, search_flag = (
+                        func_search_valid_simplex_vertex(
+                            i_ga, i_gb, i_b, pos_a, quat_a, pos_b, quat_b, gjk_state, dyn_info, gjk_info
+                        )
+                    )
+                    is_vertex_valid = search_flag == RETURN_CODE.SUCCESS
+                    if not is_vertex_valid:
+                        stage = GJK_STAGE.DONE
+                elif gjk_state.simplex.nverts[i_b] == 3:
+                    v1 = gjk_state.simplex_vertex.mink[0, i_b]
+                    v2 = gjk_state.simplex_vertex.mink[1, i_b]
+                    v3 = gjk_state.simplex_vertex.mink[2, i_b]
+                    search_dir = (v3 - v1).cross(v2 - v1).normalized()
+                    i_search = 0
+                    stage = GJK_STAGE.VERTEX_SEARCH
+                else:
+                    stage = GJK_STAGE.DONE
+
+            if is_vertex_valid:
+                gjk_state.simplex_vertex.obj1[i_s, i_b] = obj1
+                gjk_state.simplex_vertex.obj2[i_s, i_b] = obj2
+                gjk_state.simplex_vertex.local_obj1[i_s, i_b] = local_obj1
+                gjk_state.simplex_vertex.local_obj2[i_s, i_b] = local_obj2
+                gjk_state.simplex_vertex.id1[i_s, i_b] = id1
+                gjk_state.simplex_vertex.id2[i_s, i_b] = id2
+                gjk_state.simplex_vertex.mink[i_s, i_b] = minkowski
+                gjk_state.simplex.nverts[i_b] += 1
+                i_s += 1
+                stage = GJK_STAGE.ITERATE if i_s == 4 else GJK_STAGE.INITIAL_VERTEX
+
+    if gjk_flag == GJK_RETURN_CODE.INTERSECT:
+        gjk_state.distance[i_b] = 0.0
+    else:
+        gjk_state.distance[i_b] = gjk_info.FLOAT_MAX[None]
+
+    return gjk_flag
+
+
+@qd.func
+def func_is_new_simplex_vertex_valid(
+    i_b: int, id1: int, id2: int, mink: qd.types.vector(3), gjk_state: GJKState, gjk_info: GJKInfo
+):
+    """
+    Check validity of the incoming simplex vertex (defined by id1, id2 and mink).
+
+    To be a new valid simplex vertex, it should satisfy the following conditions:
+    1) The vertex should not be already in the simplex.
+    2) The simplex should not be degenerate after insertion.
+    """
+    return (not func_is_new_simplex_vertex_duplicate(i_b, id1, id2, gjk_state)) and (
+        not func_is_new_simplex_vertex_degenerate(i_b, mink, gjk_state, gjk_info)
+    )
+
+
+@qd.func
+def func_is_new_simplex_vertex_duplicate(i_b: int, id1: int, id2: int, gjk_state: GJKState):
+    """
+    Check if the incoming simplex vertex is already in the simplex.
+    """
+    nverts = gjk_state.simplex.nverts[i_b]
+    found = False
+    for i in range(nverts):
+        if id1 == -1 or (gjk_state.simplex_vertex.id1[i, i_b] != id1):
+            continue
+        if id2 == -1 or (gjk_state.simplex_vertex.id2[i, i_b] != id2):
+            continue
+        found = True
+        break
+    return found
+
+
+@qd.func
+def func_is_new_simplex_vertex_degenerate(i_b: int, mink: qd.types.vector(3), gjk_state: GJKState, gjk_info: GJKInfo):
+    """
+    Check if the simplex becomes degenerate after inserting a new vertex, assuming that the current simplex is okay.
+    """
+    is_simplex_degenerate = False
+
+    # Check if the new vertex is not very close to the existing vertices
+    nverts = gjk_state.simplex.nverts[i_b]
+    for i in range(nverts):
+        if (gjk_state.simplex_vertex.mink[i, i_b] - mink).norm_sqr() < (gjk_info.simplex_max_degeneracy_sq[None]):
+            is_simplex_degenerate = True
+            break
+
+    if not is_simplex_degenerate:
+        # Check the validity based on the simplex dimension
+        if nverts == 2:
+            # Becomes a triangle if valid, check if the three vertices are not collinear
+            is_simplex_degenerate = func_is_colinear(
+                gjk_state.simplex_vertex.mink[0, i_b], gjk_state.simplex_vertex.mink[1, i_b], mink, gjk_info
+            )
+        elif nverts == 3:
+            # Becomes a tetrahedron if valid, check if the four vertices are not coplanar
+            is_simplex_degenerate = func_is_coplanar(
+                gjk_state.simplex_vertex.mink[0, i_b],
+                gjk_state.simplex_vertex.mink[1, i_b],
+                gjk_state.simplex_vertex.mink[2, i_b],
+                mink,
+                gjk_info,
+            )
+
+    return is_simplex_degenerate
+
+
+@qd.func
+def func_is_colinear(v1: qd.types.vector(3), v2: qd.types.vector(3), v3: qd.types.vector(3), gjk_info: GJKInfo):
+    """
+    Check if three points are collinear.
+
+    This function assumes that every pair of points is non-degenerate, i.e. no pair of points is identical.
+    """
+    e1 = v2 - v1
+    e2 = v3 - v1
+    normal = e1.cross(e2)
+    return normal.norm_sqr() < (gjk_info.simplex_max_degeneracy_sq[None]) * e1.norm_sqr() * e2.norm_sqr()
+
+
+@qd.func
+def func_is_coplanar(
+    v1: qd.types.vector(3), v2: qd.types.vector(3), v3: qd.types.vector(3), v4: qd.types.vector(3), gjk_info: GJKInfo
+):
+    """
+    Check if four points are coplanar.
+
+    This function assumes that every triplet of points is non-degenerate, i.e. no triplet of points is collinear.
+    """
+    e1 = (v2 - v1).normalized()
+    e2 = (v3 - v1).normalized()
+    normal = e1.cross(e2)
+    diff = v4 - v1
+    return (normal.dot(diff) ** 2) < (gjk_info.simplex_max_degeneracy_sq[None]) * normal.norm_sqr() * diff.norm_sqr()
+
+
+@qd.func
+def func_search_valid_simplex_vertex(
+    i_ga: int,
+    i_gb: int,
+    i_b: int,
+    pos_a: qd.types.vector(3),
+    quat_a: qd.types.vector(4),
+    pos_b: qd.types.vector(3),
+    quat_b: qd.types.vector(4),
+    gjk_state: GJKState,
+    dyn_info: DynInfo,
+    gjk_info: GJKInfo,
+):
+    """
+    Search the vertex pairs of two discrete geometries for a valid simplex vertex (non-duplicate, non-degenerate).
+
+    pos_a, quat_a, pos_b and quat_b are the thread-local poses of the two geometries. Returns the world positions of the
+    two vertices, their positions in the local frame of their geometry, their vertex ids, the Minkowski point (first
+    minus second world position), and RETURN_CODE.SUCCESS when a valid pair was found, RETURN_CODE.FAIL otherwise.
+    """
+    obj1 = gs.qd_vec3(0.0, 0.0, 0.0)
+    obj2 = gs.qd_vec3(0.0, 0.0, 0.0)
+    local_obj1 = gs.qd_vec3(0.0, 0.0, 0.0)
+    local_obj2 = gs.qd_vec3(0.0, 0.0, 0.0)
+    id1 = -1
+    id2 = -1
+    minkowski = gs.qd_vec3(0.0, 0.0, 0.0)
+    flag = RETURN_CODE.FAIL
+
+    geom_nverts = gs.qd_ivec2(0, 0)
+    for i_obj in range(2):
+        i_g = i_ga if i_obj == 0 else i_gb
+        geom_nverts[i_obj] = func_num_discrete_geom_vertices(i_g, dyn_info)
+
+    n_cases = geom_nverts[0] * geom_nverts[1]
+    for i_case_ in range(n_cases):
+        i_case = (i_case_ + gjk_state.last_searched_simplex_vertex_id[i_b]) % n_cases
+        i_va = i_case // geom_nverts[1]
+        i_vb = i_case % geom_nverts[1]
+
+        id1 = dyn_info.geoms.vert_start[i_ga] + i_va
+        id2 = dyn_info.geoms.vert_start[i_gb] + i_vb
+        for i_obj in range(2):
+            i_g = i_ga if i_obj == 0 else i_gb
+            i_v = i_va if i_obj == 0 else i_vb
+            pos = pos_a if i_obj == 0 else pos_b
+            quat = quat_a if i_obj == 0 else quat_b
+            obj, local_obj = func_get_discrete_geom_vertex(i_g, i_v, pos, quat, dyn_info)
+            if i_obj == 0:
+                obj1 = obj
+                local_obj1 = local_obj
+            else:
+                obj2 = obj
+                local_obj2 = local_obj
+        minkowski = obj1 - obj2
+
+        # Check if the new vertex is valid
+        if func_is_new_simplex_vertex_valid(i_b, id1, id2, minkowski, gjk_state, gjk_info):
+            flag = RETURN_CODE.SUCCESS
+            # Update buffer
+            gjk_state.last_searched_simplex_vertex_id[i_b] = (i_case + 1) % n_cases
+            break
+
+    return obj1, obj2, local_obj1, local_obj2, id1, id2, minkowski, flag
+
+
+@qd.func
+def func_num_discrete_geom_vertices(i_g: int, dyn_info: DynInfo):
+    """
+    Count the number of discrete vertices in the geometry.
+    """
+    vert_start = dyn_info.geoms.vert_start[i_g]
+    vert_end = dyn_info.geoms.vert_end[i_g]
+    count = vert_end - vert_start
+    return count
+
+
+@qd.func
+def func_get_discrete_geom_vertex(
+    i_g: int, i_v: int, pos: qd.types.vector(3), quat: qd.types.vector(4), dyn_info: DynInfo
+):
+    """
+    Get the discrete vertex of the geometry for the given index [i_v].
+    """
+    geom_type = dyn_info.geoms.type[i_g]
+
+    # Get the vertex position in the local frame of the geometry.
+    v_ = qd.Vector([0.0, 0.0, 0.0], dt=gs.qd_float)
+    if geom_type == gs.GEOM_TYPE.BOX:
+        # For the consistency with the [func_support_box] function of [SupportField] class, we handle the box
+        # vertex positions in a different way than the general mesh.
+        v_ = qd.Vector(
+            [
+                (1.0 if (i_v & 1 == 1) else -1.0) * dyn_info.geoms.data[i_g][0] * 0.5,
+                (1.0 if (i_v & 2 == 2) else -1.0) * dyn_info.geoms.data[i_g][1] * 0.5,
+                (1.0 if (i_v & 4 == 4) else -1.0) * dyn_info.geoms.data[i_g][2] * 0.5,
+            ],
+            dt=gs.qd_float,
+        )
+    elif geom_type == gs.GEOM_TYPE.MESH:
+        vert_start = dyn_info.geoms.vert_start[i_g]
+        v_ = dyn_info.verts.init_pos[vert_start + i_v]
+
+    # Transform the vertex position to the world frame using thread-local pos/quat
+    v = gu.qd_transform_by_trans_quat(v_, pos, quat)
+
+    return v, v_
+
+
+@qd.func
+def func_safe_gjk_triangle_info(i_b: int, i_ta: int, i_tb: int, i_tc: int, i_apex: int, gjk_state: GJKState):
+    """
+    Compute normal and signed distance of the triangle face on the simplex from the origin.
+
+    The triangle is defined by the vertices [i_ta], [i_tb], and [i_tc], and the apex is used to orient the triangle
+    normal, so that it points outward from the simplex. Thus, if the origin is inside the simplex in terms of this
+    triangle, the signed distance will be positive.
+    """
+    vertex_1 = gjk_state.simplex_vertex.mink[i_ta, i_b]
+    vertex_2 = gjk_state.simplex_vertex.mink[i_tb, i_b]
+    vertex_3 = gjk_state.simplex_vertex.mink[i_tc, i_b]
+    apex_vertex = gjk_state.simplex_vertex.mink[i_apex, i_b]
+
+    # This normal is guaranteed to be non-zero because we build the simplex avoiding degenerate vertices.
+    normal = (vertex_3 - vertex_1).cross(vertex_2 - vertex_1).normalized()
+
+    # Reorient the normal to point outward from the simplex
+    if normal.dot(apex_vertex - vertex_1) > 0.0:
+        normal = -normal
+
+    # Compute the signed distance from the origin to the triangle plane
+    sdist = normal.dot(vertex_1)
+
+    return normal, sdist
+
+
+@qd.func
+def func_safe_gjk_support(
+    i_ga: int,
+    i_gb: int,
+    i_b: int,
+    pos_a: qd.types.vector(3),
+    quat_a: qd.types.vector(4),
+    pos_b: qd.types.vector(3),
+    quat_b: qd.types.vector(4),
+    dir: qd.types.vector(3),
+    collider_state: ColliderState,
+    gjk_state: GJKState,
+    dyn_info: DynInfo,
+    rigid_info: RigidInfo,
+    gjk_info: GJKInfo,
+    support_field_info: SupportFieldInfo,
+    rigid_config: qd.template(),
+    collider_config: qd.template(),
+):
+    """
+    Find support points on the two objects using [dir] to use in the [safe_gjk] algorithm.
+    Uses thread-local pos/quat for both geometries.
+
+    This is a more robust version of the support function that finds only one pair of support points, because this
+    function perturbs the support direction to find the best support points that guarantee non-degenerate simplex
+    in the GJK algorithm.
+
+    The support count (number of candidate support vertices tied for the maximum dot product) is only evaluated once
+    for the original direction (i=0). For perturbed directions (i=1..8), we skip the count and go straight to
+    computing support points and checking simplex validity. This is critical for performance because the count check
+    is ineffective for perturbed directions: the support field is discretized on a spherical grid, and an EPS-scale
+    perturbation maps to the same grid cells, yielding the same count every time. The previous approach recomputed
+    count for all 9 directions, wasting 8 evaluations that always returned > 1 for meshes with flat faces, without
+    ever using the perturbed support points.
+
+    Parameters:
+    ----------
+    dir: qd.types.vector(3)
+        The unit direction in which to find the support points, from [ga] (obj 1) to [gb] (obj 2).
+    """
+    EPS = rigid_info.EPS[None]
+
+    obj1 = gs.qd_vec3(0.0, 0.0, 0.0)
+    obj2 = gs.qd_vec3(0.0, 0.0, 0.0)
+    local_obj1 = gs.qd_vec3(0.0, 0.0, 0.0)
+    local_obj2 = gs.qd_vec3(0.0, 0.0, 0.0)
+    id1 = gs.qd_int(-1)
+    id2 = gs.qd_int(-1)
+    mink = obj1 - obj2
+
+    for i in range(9):
+        n_dir = dir
+        if i > 0:
+            j = i - 1
+            n_dir[0] += -(1.0 - 2.0 * (j & 1)) * EPS
+            n_dir[1] += -(1.0 - 2.0 * (j & 2)) * EPS
+            n_dir[2] += -(1.0 - 2.0 * (j & 4)) * EPS
+
+        # First order normalization based on Taylor series is accurate enough
+        n_dir *= 2.0 - n_dir.dot(dir)
+
+        # Use the current direction to find the support points.
+        for j in range(2):
+            d = n_dir if j == 0 else -n_dir
+            i_g = i_ga if j == 0 else i_gb
+            pos = pos_a if j == 0 else pos_b
+            quat = quat_a if j == 0 else quat_b
+
+            support_pos, support_localpos, support_id = support_driver(
+                i_g,
+                i_b,
+                j,
+                d,
+                pos,
+                quat,
+                collider_state,
+                gjk_state,
+                dyn_info,
+                gjk_info,
+                support_field_info,
+                rigid_config,
+                collider_config,
+                shrink_sphere=False,
+            )
+            if j == 0:
+                obj1 = support_pos
+                local_obj1 = support_localpos
+                id1 = support_id
+            else:
+                obj2 = support_pos
+                local_obj2 = support_localpos
+                id2 = support_id
+
+        mink = obj1 - obj2
+
+        if i == 0:
+            # Only check support count for the original direction. If unique, we are done.
+            num_supports = func_count_support(i_ga, i_gb, quat_a, quat_b, n_dir, dyn_info, support_field_info)
+            if num_supports > 1:
+                # Ambiguous support (e.g. flat face) - keep as baseline, try perturbed directions.
+                continue
+            else:
+                break
+
+        # For perturbed directions, check if the support points have been found before or would form a
+        # degenerate simplex. The count is skipped because an EPS perturbation doesn't change which
+        # support-field grid cells are looked up, so it would return the same value as i=0.
+        if i == 8:
+            # If this was the last iteration, we don't check if it has been found before.
+            break
+
+        # Check if the updated simplex would be a degenerate simplex.
+        if func_is_new_simplex_vertex_valid(i_b, id1, id2, mink, gjk_state, gjk_info):
+            break
+
+    return obj1, obj2, local_obj1, local_obj2, id1, id2, mink
+
+
+@qd.func
+def count_support_driver(
+    i_g: int, d: qd.types.vector(3), quat: qd.types.vector(4), dyn_info: DynInfo, support_field_info: SupportFieldInfo
+):
+    """
+    Count the number of possible support points in the given direction,
+    using thread-local quat instead of reading from geoms_state.
+    """
+    geom_type = dyn_info.geoms.type[i_g]
+    count = 1
+    if geom_type == gs.GEOM_TYPE.BOX:
+        count = support_field._func_count_supports_box(d, quat)
+    elif geom_type == gs.GEOM_TYPE.MESH:
+        count = support_field._func_count_supports_world(i_g, d, quat, support_field_info)
+    return count
+
+
+@qd.func
+def func_count_support(
+    i_ga: int,
+    i_gb: int,
+    quat_a: qd.types.vector(4),
+    quat_b: qd.types.vector(4),
+    dir: qd.types.vector(3),
+    dyn_info: DynInfo,
+    support_field_info: SupportFieldInfo,
+):
+    """
+    Count the number of possible pairs of support points on the two objects
+    in the given direction, using thread-local pos/quat for both geometries.
+    """
+    count = 1
+    for i in range(2):
+        count *= count_support_driver(
+            i_ga if i == 0 else i_gb,
+            dir if i == 0 else -dir,
+            quat_a if i == 0 else quat_b,
+            dyn_info,
+            support_field_info,
+        )
+
+    return count
