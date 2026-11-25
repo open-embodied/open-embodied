@@ -1,4 +1,4 @@
-# Open-Embodied 
+# Open-Embodied   Body, Hand and Sim2world
 
 The Open Source Robot Real Time OS for the  Embodied  Time 
 
@@ -9,7 +9,7 @@ embodied by
 Harvard University, Stanford University, Peking University, BUPT and more
 
 
-#Oopen Embodied  Hardware
+# Open Embodied  Hardware
 
 Biuld your own Embodied Hardware  [Biuld your own Embodied Hardware](https://aie.gitcc.com/embodied/embodied-robots.html)
 
