@@ -6,7 +6,7 @@ BOOK   The Open Landscape of Embodied AI[The Open Landscape of Embodied AI](http
 
 embodied by
 
-Harvard University, Stanford University, Peking University, BUPT and more  
+Harvard University, Stanford University, Peking University, BUPT and more  by DeepOpen
 
 
 # Open Embodied  Hardware
