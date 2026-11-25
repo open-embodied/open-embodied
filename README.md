@@ -13,6 +13,27 @@ Harvard University, Stanford University, Peking University, BUPT and more
 
 [DeepHunch](https://github.com/open-embodied/deephunch)
 
+# Project Grand Plan
+
+Unifying Robot Interfaces for the Era of Embodied Intelligence
+
+# Development Studio
+
+https://www.gitcc.com/dpqq-ros-agent/deep-ros-agent
+
+# VLLM
+
+https://www.gitcc.com
+
+# Datasets
+
+Opensource Embodied Datasets [Opensource Embodied Datasets](https://robot-ai.gitcc.com/)
+
+# Book
+
+The Open Landscape of Embodied AI[The Open Landscape of Embodied AI](https://aie.gitcc.com/aic/embodied/embodied-ai-en.html)
+
+
 
 
 # The Ten Most Influential Open-Source Embodied AI Projects
@@ -181,10 +202,6 @@ open-embodied has benefitted from the following projects/resources.
 
 
 
-# Book
-
-The Open Landscape of Embodied AI[The Open Landscape of Embodied AI](https://aie.gitcc.com/aic/embodied/embodied-ai-en.html)
-
 # Project Grand Plan
 
 Unifying Robot Interfaces for the Era of Embodied Intelligence
@@ -200,6 +217,12 @@ https://www.gitcc.com
 # Datasets
 
 Opensource Embodied Datasets [Opensource Embodied Datasets](https://robot-ai.gitcc.com/)
+
+# Book
+
+The Open Landscape of Embodied AI[The Open Landscape of Embodied AI](https://aie.gitcc.com/aic/embodied/embodied-ai-en.html)
+
+
 
 
 # How TO Get Data
