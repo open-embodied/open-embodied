@@ -2,7 +2,7 @@
 
 The Open Source Embodied Robot  
 
-BOOK   The Open Landscape of Embodied AI[The Open Landscape of Embodied AI](https://aie.gitcc.com/aic/embodied/embodied-ai-en.html)
+BOOK   The Open Landscape of Embodied AI     [The Open Landscape of Embodied AI ](https://aie.gitcc.com/aic/embodied/embodied-ai-en.html)
 
 embodied by
 
