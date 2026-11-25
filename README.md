@@ -7,7 +7,9 @@ embodied by
 Harvard University, Stanford University, Peking University, BUPT and more
 
 
-# open Embodied
+# open Embodied  Hardware
+
+Biuld your own Embodied Hardware  [Biuld your own Embodied Hardware](https://aie.gitcc.com/embodied/embodied-robots.html)
 
 # sim world DeepHunch
 
