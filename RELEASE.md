@@ -1,4 +1,4 @@
-# Genesis Release Note
+# DeepHunch Release Note
 
 ## 1.5.0
 
@@ -31,7 +31,7 @@ This release adds support for dynamic visual textures, useful for applications r
 
 ### Miscellaneous
 
-* Fix type checkers unable to resolve genesis dtypes. (@Milotrince) (#3645)
+* Fix type checkers unable to resolve deephunch dtypes. (@Milotrince) (#3645)
 * Migrate examples and tests off deprecated visual options. (@duburcqa) (#3855)
 * Keep the poses of fixed root links apart from the link poses derived from the state. (@duburcqa) (#3862)
 * Add support of draw_debug for camera sensors. (@duburcqa) (#3868)
@@ -106,7 +106,7 @@ This release keeps polishing our non-rigid solvers and couplers. Multi-physics s
 * Add support for deterministic mode to MPM solver. (@duburcqa) (#3767)
 * Add support for deterministic mode to coupling rigid vs SPH or MPM. (@duburcqa) (#3776)
 * Fix SAP solves running to the iteration cap when FEM and rigid bodies are not in contact. (@duburcqa) (#3811)
-* Fix Genesis failing to import when matplotlib is not installed. (@duburcqa) (#3832)
+* Fix DeepHunch failing to import when matplotlib is not installed. (@duburcqa) (#3832)
 * Avoid GPU sync when setting indexed entries of masked environments. (@duburcqa) (#3837)
 * Declare the error and checkpoint support of every solver and coupler. (@duburcqa) (#3766)
 * Cache the compiled SAP coupler kernels across runs. (@duburcqa) (#3813)
@@ -203,7 +203,7 @@ The release significantly rigid body simulation for scenes with fine convex deco
 ### Breaking
 
 * [BUG FIX] Support plain torch tensors and closed-loop policies in differentiable simulation. (@Kashu7100) (#3586)
-* [MISC] Get rid of custom Genesis tensor used for differentiable simulation. (@duburcqa) (#3592)
+* [MISC] Get rid of custom DeepHunch tensor used for differentiable simulation. (@duburcqa) (#3592)
 
 ### New Features
 
@@ -283,7 +283,7 @@ This minor release focuses on improving the simulation speed for non-batch to mo
 * Fix 'z_up_to_R' failing when up is omitted. (@Milotrince) (#3396)
 * Fix compilation failure in performance mode on Apple Metal. (@duburcqa) (#3421)
 * Fix SDF boundary visualization. (@MohammadHijjawi97) (#3425)
-* Fix Genesis log messages printed twice when user configures root logging. (@Kashu7100) (#3427)
+* Fix DeepHunch log messages printed twice when user configures root logging. (@Kashu7100) (#3427)
 * Fix the scan lines of a full-rotation spherical raycast pattern. (@MohammadHijjawi97) (#3424)
 * Fix pose getters not complying with deterministic mode on GPU. (@Milotrince) (#3387)
 * Apply scalar cross-axis coupling to IMU readings. (@cyanseek) (#3436)
@@ -401,7 +401,7 @@ This release introduces the capability to export a scene plus a complete traject
 * [BREAKING] Drop the rotation of a recorder's file on reset.(@duburcqa) (#3309)
 * Average the joint-space inertia over every degree of freedom of the scene. (@duburcqa) (#3237)
 * Solve the mass matrix for the active trees of a partly hibernated entity. (@duburcqa) (#3237)
-* Support instantiating solver options before Genesis is initialized. (@duburcqa) (#3281)
+* Support instantiating solver options before DeepHunch is initialized. (@duburcqa) (#3281)
 * Let a kinematic entity be attached onto another kinematic one. (@duburcqa) (#3228)
 * Remove dockerfiles. (@duburcqa) (#3227)
 * Support negative indices for env and entity index args. (@jeetrex17) (#3165)
@@ -674,7 +674,7 @@ This minor release mainly improves the robustness of rigid collision detection f
 
 ## 1.1.0
 
-This release focuses on performance improvement and numerical stability of rigid solver. Genesis speed should drop less aggressively as the complexity of the scene increases, notably the number of decomposed convex geoms, floating-base entities, and dofs.
+This release focuses on performance improvement and numerical stability of rigid solver. DeepHunch speed should drop less aggressively as the complexity of the scene increases, notably the number of decomposed convex geoms, floating-base entities, and dofs.
 
 ### Bug Fixes
 
@@ -1359,7 +1359,7 @@ This minor release fixes a few non-blocking rendering issues for the Rasterizer 
 ### Bug Fixes
 
 * Fix shadow map not properly rendered for objects far away from floor plane. (@duburcqa) (#1664)
-* Fix genesis import failure if tkinter is failing at init on MacOS. (@duburcqa) (#1666)
+* Fix deephunch import failure if tkinter is failing at init on MacOS. (@duburcqa) (#1666)
 * Fix default visualization mode for emitter surface. (@duburcqa) (#1665)
 
 ### Miscellaneous
@@ -1369,7 +1369,7 @@ This minor release fixes a few non-blocking rendering issues for the Rasterizer 
 
 ## 0.3.2
 
-This minor release fixes a few additional regressions and initiates migration to our own open-source fork of Taichi, [GsTaichi](https://github.com/Genesis-Embodied-AI/gstaichi) (contributions are welcome!).
+This minor release fixes a few additional regressions and initiates migration to our own open-source fork of Taichi, [GsTaichi](https://github.com/DeepHunch-Embodied-AI/gstaichi) (contributions are welcome!).
 
 ### Behavior Changing
 
@@ -1428,14 +1428,14 @@ This small release addresses the most pressing regressions that has been pointed
 * Migrate to native Python API for 'splashsurf'. (@duburcqa) (#1531)
 * Refactor weld constraint API. (@duburcqa) (#1536)
 * Allow following entity or mounting camera building scene. (@duburcqa) (#1548)
-* Faster Genesis import. (@duburcqa) (#1549)
+* Faster DeepHunch import. (@duburcqa) (#1549)
 * Avoid rendering cameras at reset. (@Kashu7100) (#1552)
 * Enable taichi debug mode in tests if possible. (@duburcqa) (#1541)
 * Re-enable markers by default on RGB offscreen cameras. (@duburcqa) (#1570)
 
 ## 0.3.0
 
-This release focuses primarily on stability, covering everything from MJCF/URDF parsing to rendering and physics, backend by a new CI infrastructure running more than 200 unit tests on all supported platforms. The most requested Mujoco features that were previously missing have been implemented. Native support of batching has been extended to all solvers except Stable Fluid, motion planning, and rendering via [gs-madrona](https://github.com/Genesis-Embodied-AI/gs-madrona). Finally, support of soft body dynamics has been enhanced, with the introduction of constraints and coupling between soft and rigid body dynamics.
+This release focuses primarily on stability, covering everything from MJCF/URDF parsing to rendering and physics, backend by a new CI infrastructure running more than 200 unit tests on all supported platforms. The most requested Mujoco features that were previously missing have been implemented. Native support of batching has been extended to all solvers except Stable Fluid, motion planning, and rendering via [gs-madrona](https://github.com/DeepHunch-Embodied-AI/gs-madrona). Finally, support of soft body dynamics has been enhanced, with the introduction of constraints and coupling between soft and rigid body dynamics.
 
 ### New Features
 
@@ -1509,12 +1509,12 @@ This release focuses primarily on stability, covering everything from MJCF/URDF 
 * Avoid useless convex decomposition. (@duburcqa) (#957)
 * Improve numerical stability of MPR collision detection algorithm. (@duburcqa) (#966, #977, #1336)
 * Improve multi-point contact stability. (@duburcqa) (#967, #1012, #1117, #1297)
-* Fix genesis destroy. (@duburcqa) (#1007)
+* Fix deephunch destroy. (@duburcqa) (#1007)
 * Fix issue when adding multiple FEM entities. (@kosuke1701) (#1014)
 * Using Vulkan backend for taichi even if no Intel XPU device is available. (@duburcqa) (#1025)
 * Try to repair partially "broken" meshes if possible. (@duburcqa) (#1023, #1075, #1077)
 * Fix scaling of poly-articulated robots. (@duburcqa) (#1039, #1108)
-* Fix mujoco vs genesis discrepancies. (@duburcqa) (#1097)
+* Fix mujoco vs deephunch discrepancies. (@duburcqa) (#1097)
 * More robust robot loading and default options. (@duburcqa) (#1098)
 * Improve external force handling. (@duburcqa) (#1292)
 * Fix terrain collision detection. (@duburcqa) (#1338)
@@ -1531,7 +1531,7 @@ This release focuses primarily on stability, covering everything from MJCF/URDF 
 * Get rid of internally maintained trimesh dependency. (@duburcqa) (#918)
 * Refactor rigid body data accessors. (@duburcqa) (#924)
 * Speed-up convert taichi field to torch. (@duburcqa) (#935)
-* Cleanup Genesis init / exit. (@duburcqa) (#989)
+* Cleanup DeepHunch init / exit. (@duburcqa) (#989)
 * Use torch cuda with vulkan taichi backend if available. (@duburcqa) (#1043)
 * Fix naming convention inconsistencies. (@duburcqa) (#1053)
 * Add API documentation. (@zswang666) (#1105)

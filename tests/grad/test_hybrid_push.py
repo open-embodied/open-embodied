@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
-from genesis.utils.misc import tensor_to_array
+import deephunch as gs
+from deephunch.utils.misc import tensor_to_array
 
 from ..utils.assertions import assert_allclose
 

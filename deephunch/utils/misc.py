@@ -1,0 +1,1813 @@
+import ctypes
+import dataclasses
+import datetime
+import functools
+import io
+import logging
+import math
+import numbers
+import os
+import random
+import sys
+import weakref
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import field
+from importlib import import_module
+from itertools import combinations
+from typing import Any, NoReturn
+
+import numpy as np
+import torch
+
+import cpuinfo
+import numba as nb
+import psutil
+import pyglet
+
+import quadrants as qd
+from quadrants.lang import kernel_impl
+from quadrants.lang._fast_caching import args_hasher, src_hasher
+from quadrants.lang._perf_dispatch import PerformanceDispatcher
+from quadrants.lang._template_mapper import TemplateMapper
+from quadrants.lang.kernel import Kernel
+from quadrants.lang.util import to_pytorch_type
+from quadrants.types.enums import AutodiffMode
+
+import deephunch as gs
+from deephunch.typing import is_sequence
+
+
+LOGGER = logging.getLogger(__name__)
+
+_WIN_STD_ERROR_HANDLE = -12
+_WIN_HANDLE_FLAG_PROTECT_FROM_CLOSE = 0x2
+
+_UNSIGNED_TO_SIGNED_DTYPES = {torch.uint16: torch.int16, torch.uint32: torch.int32, torch.uint64: torch.int64}
+
+
+class DeprecationError(Exception):
+    pass
+
+
+def raise_exception(msg="Something went wrong.") -> NoReturn:
+    raise gs.DeepHunchException(msg)
+
+
+def raise_exception_from(msg="Something went wrong.", cause=None) -> NoReturn:
+    raise gs.DeepHunchException(msg) from cause
+
+
+class redirect_libc_stderr:
+    """
+    Context-manager that temporarily redirects C / C++ std::cerr (i.e. the C `stderr` file descriptor 2) to a given
+    Python file-like object's fd.
+
+    Works on macOS, Linux (glibc / musl) and Windows (Universal C Runtime). On Windows, native code writing to the
+    standard error handle of the process rather than to descriptor 2 (e.g. the logger of Quadrants) still writes to the
+    original stream.
+    """
+
+    def __init__(self, fd):
+        self.fd = fd
+        self.stderr_fileno = None
+        self.original_stderr_fileno = None
+        self.original_sys_stderr = None
+        self.stderr_handle = None
+        self.stderr_handle_flags = None
+
+    def __enter__(self):
+        try:
+            self.stderr_fileno = sys.stderr.fileno()
+        except (io.UnsupportedOperation, AttributeError):
+            # Do nothing is not a real OS-level file descriptor but rather some IO buffer
+            return self
+
+        self.original_stderr_fileno = os.dup(self.stderr_fileno)
+        sys.stderr.flush()
+
+        if os.name == "posix":  # macOS, Linux, *BSD, ...
+            libc = ctypes.CDLL(None)
+            libc.fflush(None)
+            libc.dup2(self.fd.fileno(), self.stderr_fileno)
+        elif os.name == "nt":  # Windows
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.GetStdHandle.restype = ctypes.c_void_p
+
+            # Native code caches the standard error handle of the process (the logger of Quadrants does). Descriptor 2
+            # owns that handle, so redirecting it closes the handle and makes the file the standard error handle. The
+            # handle is protected from closing during the swap and restored afterward, otherwise writes through the
+            # cached value go to whichever file reuses it.
+            self.stderr_handle = ctypes.c_void_p(kernel32.GetStdHandle(_WIN_STD_ERROR_HANDLE))
+            stderr_handle_flags = ctypes.c_ulong()
+            kernel32.GetHandleInformation(self.stderr_handle, ctypes.byref(stderr_handle_flags))
+            self.stderr_handle_flags = stderr_handle_flags.value
+            kernel32.SetHandleInformation(
+                self.stderr_handle, _WIN_HANDLE_FLAG_PROTECT_FROM_CLOSE, _WIN_HANDLE_FLAG_PROTECT_FROM_CLOSE
+            )
+
+            # Python links the Universal C Runtime, so 'os.dup2' acts on the descriptor table native extensions share
+            ctypes.CDLL("ucrtbase").fflush(None)
+            os.dup2(self.fd.fileno(), self.stderr_fileno)
+            kernel32.SetStdHandle(_WIN_STD_ERROR_HANDLE, self.stderr_handle)
+
+            # A console stream of Python looks up the handle of its descriptor at every write and fails once that handle
+            # is a file, so Python writes go through a plain stream on the same descriptor meanwhile, as on POSIX.
+            self.original_sys_stderr = sys.stderr
+            sys.stderr = open(
+                self.stderr_fileno, "w", buffering=1, errors=self.original_sys_stderr.errors, closefd=False
+            )
+        else:
+            gs.logger.warning(f"Unsupported platform for redirecting libc stderr: {sys.platform}")
+
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.stderr_fileno is None:
+            return
+
+        sys.stderr.flush()
+        if os.name == "posix":
+            libc = ctypes.CDLL(None)
+            libc.fflush(None)
+            libc.dup2(self.original_stderr_fileno, self.stderr_fileno)
+        elif os.name == "nt":
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+            sys.stderr.close()
+            sys.stderr = self.original_sys_stderr
+            ctypes.CDLL("ucrtbase").fflush(None)
+            os.dup2(self.original_stderr_fileno, self.stderr_fileno)
+            kernel32.SetStdHandle(_WIN_STD_ERROR_HANDLE, self.stderr_handle)
+            kernel32.SetHandleInformation(
+                self.stderr_handle, _WIN_HANDLE_FLAG_PROTECT_FROM_CLOSE, self.stderr_handle_flags
+            )
+            self.original_sys_stderr = None
+            self.stderr_handle = None
+            self.stderr_handle_flags = None
+
+        os.close(self.original_stderr_fileno)
+        self.stderr_fileno = None
+        self.original_stderr_fileno = None
+
+
+class ZeroCopyMode:
+    """
+    Whether the accessors of the solvers read and write their arrays through zero-copy torch views, read as a boolean.
+
+    The views exist when the backend and the torch device share memory (`is_supported`). The accessors use them unless
+    a block asks for their kernel path through 'disabled', as the recording of a differentiable rollout does to capture
+    the kernels of every accessor. The copy helpers (see 'qd_to_torch') read `is_supported` alone, so a copy stays a
+    torch operation whichever path the accessors take.
+    """
+
+    def __init__(self, is_supported: bool | None):
+        self.is_supported = bool(is_supported)
+        self._is_disabled = False
+
+    def __bool__(self) -> bool:
+        return self.is_supported and not self._is_disabled
+
+    def __repr__(self) -> str:
+        return repr(bool(self))
+
+    @contextmanager
+    def disabled(self) -> Iterator[None]:
+        """Make the accessors take their kernel path in the block."""
+        is_disabled, self._is_disabled = self._is_disabled, True
+        try:
+            yield
+        finally:
+            self._is_disabled = is_disabled
+
+
+@contextmanager
+def set_environ(environ: Mapping[str, str]):
+    """Set environment variables for the duration of the context, then restore them to their previous state.
+
+    Only the variables in 'environ' are touched: those previously unset are removed on exit, the others get back their
+    previous value.
+    """
+    environ_prev = {name: os.environ.get(name) for name in environ}
+    os.environ.update(environ)
+    try:
+        yield
+    finally:
+        for name, value in environ_prev.items():
+            if value is None:
+                del os.environ[name]
+            else:
+                os.environ[name] = value
+
+
+def assert_initialized(cls):
+    original_init = cls.__init__
+
+    @functools.wraps(original_init)
+    def new_init(self, *args, **kwargs):
+        if not gs._initialized:
+            gs.raise_exception("DeepHunch hasn't been initialized. Did you call `gs.init()`?")
+        original_init(self, *args, **kwargs)
+
+    cls.__init__ = new_init
+    return cls
+
+
+class BuildableMixin:
+    """Record whether the component is built, for the guards 'assert_built' and 'assert_unbuilt' of its own methods."""
+
+    _is_built: bool = False
+
+
+class _BuildGuard:
+    """Check at class creation that the class holding a guarded method records its built state, then step aside.
+
+    The class attribute becomes the guarded function itself, so calling the method costs an ordinary function lookup.
+    """
+
+    def __init__(self, member: Callable | property) -> None:
+        self.member = member
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        if not issubclass(owner, BuildableMixin):
+            raise_exception(
+                f"'{owner.__name__}.{name}' is guarded by its built state, which only a subclass of BuildableMixin records."
+            )
+        setattr(owner, name, self.member)
+
+
+def _guard_member(method: Callable | property, is_built: bool) -> _BuildGuard:
+    # A guard placed above '@property' guards its getter, the property itself being a class attribute
+    func = method.fget if isinstance(method, property) else method
+
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        if self._is_built is not is_built:
+            gs.raise_exception(f"{type(self).__name__} is {'not built yet' if is_built else 'already built'}.")
+        return func(self, *args, **kwargs)
+
+    if isinstance(method, property):
+        return _BuildGuard(property(wrapper, method.fset, method.fdel, method.__doc__))
+    return _BuildGuard(wrapper)
+
+
+def assert_unbuilt(method: Callable | property) -> _BuildGuard:
+    """Refuse a call once the component is built. The class holding the method must subclass BuildableMixin."""
+    return _guard_member(method, is_built=False)
+
+
+def assert_built(method: Callable | property) -> _BuildGuard:
+    """Refuse a call until the component is built. The class holding the method must subclass BuildableMixin."""
+    return _guard_member(method, is_built=True)
+
+
+class BatchedMixin:
+    """Record the parallel environments a component simulates, which its owner hands down when building it.
+
+    It is the last 'build' of the chain: the 'build' of each component using it calls 'super().build(n_envs)'.
+    """
+
+    def build(self, n_envs: int) -> None:
+        """Settle the parallel environments, 'n_envs' being their number, 0 for a scene without them."""
+        self.n_envs = n_envs
+        # The batch size, which a scene without parallel environments floors to one
+        self.n_envs_ = max(1, n_envs)
+        self._envs_idx = torch.arange(self.n_envs_, dtype=gs.tc_int, device=gs.device)
+
+
+def with_lock(method):
+    """Acquire ``self._lock`` before running the wrapped method."""
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
+def set_random_seed(seed):
+    # Note: we don't set seed for quadrants, since Quadrants doesn't support stochastic operations in gradient computation.
+    # Therefore, we only allow deterministic Quadrants operations.
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+def get_device(backend: gs.constants.backend, device_idx: int | None = None):
+    if backend == gs.gpu:
+        if torch.cuda.is_available():
+            if torch.version.hip:
+                backend = gs.amdgpu
+            else:  # torch.version.cuda:
+                backend = gs.cuda
+        elif sys.platform == "darwin":
+            backend = gs.metal
+        else:
+            gs.raise_exception("No Torch GPU device available.")
+
+    if backend in (gs.cuda, gs.amdgpu):
+        if (
+            not torch.cuda.is_available()
+            or (backend == gs.cuda and not torch.version.cuda)
+            or (backend == gs.amdgpu and not torch.version.hip)
+        ):
+            gs.raise_exception(f"Torch device 'cuda' not available for backend '{backend}'.")
+        if device_idx is None:
+            device_idx = torch.cuda.current_device()
+        device = torch.device("cuda", device_idx)
+        device_property = torch.cuda.get_device_properties(device)
+        device_name = device_property.name
+        total_mem = device_property.total_memory / 1024**3
+    elif backend == gs.metal:
+        # on mac, cpu and gpu are in the same physical hardware and sharing memory
+        device, device_name, total_mem, _ = get_device(gs.cpu)
+        assert not device_idx, "Specifying device index other than 0 is not support for Torch Metal device."
+        # Quadrants Metal backend runs regardless of Torch MPS support, which virtualized Apple GPUs may lack
+        if os.environ.get("GS_TORCH_FORCE_CPU_DEVICE") != "1":
+            if not torch.backends.mps.is_available():
+                gs.raise_exception("Torch device 'mps' not available.")
+            device = torch.device("mps")
+    else:
+        cpu_info = cpuinfo.get_cpu_info()
+        device_name = next(filter(None, map(cpu_info.get, ("brand_raw", "hardware_raw", "vendor_id_raw"))))
+        total_mem = psutil.virtual_memory().total / 1024**3
+        assert not device_idx, "Specifying device index other than 0 is not support for Torch CPU device."
+        device = torch.device("cpu")
+    return device, device_name, total_mem, backend
+
+
+def get_gpu_cores_per_unit() -> int:
+    """Return the number of compute cores per compute unit of the active GPU, -1 on the CPU backend.
+
+    NVIDIA packs 128 CUDA cores per streaming multiprocessor (SM) and AMD/ROCm 64 stream processors per compute unit
+    (CU); Apple Silicon 128 ALUs per GPU core. Other GPU backends (e.g. Vulkan) take the AMD MI350X as a baseline.
+    """
+    if gs.backend == gs.cpu:
+        return -1
+    # FIXME: quadrants should expose a query of the GPU core count and layout for every backend.
+    if torch.cuda.is_available():
+        return 64 if torch.version.hip else 128
+    if gs.backend == gs.metal:
+        return 128
+    return 64
+
+
+def get_gpu_core_count() -> int:
+    """Return the number of GPU compute cores for the active device.
+
+    This is the env count above which one-thread-per-env already saturates the GPU, so cooperative or tiled kernels stop
+    being worthwhile. Where the driver cannot be queried (Metal, or a GPU without a torch.cuda device) an upper-bound
+    estimate of the compute unit count is used: 40 GPU cores on Apple Silicon, the 256 CUs of an AMD MI350X for other
+    GPU backends (e.g. Vulkan). The CPU backend gets -1, so no GPU shares its compiled kernels.
+    """
+    if gs.backend == gs.cpu:
+        return -1
+    cores_per_unit = get_gpu_cores_per_unit()
+    if torch.cuda.is_available():
+        return torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count * cores_per_unit
+    if gs.backend == gs.metal:
+        return 40 * cores_per_unit
+    # AMD MI350X: 256 compute units (https://www.amd.com/en/products/accelerators/instinct/mi350/mi350x.html). For
+    # comparison, an RTX 6000 Blackwell has 188 SMs and an RTX 5090 170, of 128 cores each.
+    return 256 * cores_per_unit
+
+
+def get_gpu_block_shared_memory_bytes() -> int:
+    """Return the shared memory a block of threads holds on the active GPU, in bytes."""
+    # FIXME: quadrants#976 - the shared memory of a block is a 64 KiB lower bound on AMDGPU, which caps what CDNA4
+    # (gfx950) holds below its 160 KiB per block.
+    return qd.lang.impl.get_max_shared_memory_bytes(is_lowerbound_ok=True)
+
+
+def get_gpu_shared_tile_sizes(max_n_sizes: int) -> tuple[int, ...]:
+    """Return the ascending sizes s worth compiling for a shared tile of s x (s + 1) ``gs.qd_float`` on the active GPU.
+
+    The shared memory of a block only bounds how many blocks a compute unit runs at once. Each candidate is the largest
+    multiple of 8 (keeping the padded row stride odd) that runs a given count of resident one-warp blocks, as bounded by
+    the shared memory of a compute unit and of a block, the driver reservation and allocation granularity per block and
+    the warp slots.
+
+    At most max_n_sizes candidates are kept, so that the static values of a kernel stay a small fixed set: those
+    minimizing the mean drop in resident blocks that rounding a row count n up to the next kept size causes against its
+    tightest candidate, weighted by 1 / n so that every doubling of the size counts the same.
+
+    Where the compute unit cannot be queried (Metal, Vulkan), it is taken to hold the shared memory of one block, which
+    then bounds the resident blocks alone. A row count above the largest size has no shared tile.
+    """
+    if gs.backend == gs.cpu:
+        gs.raise_exception("CPU backend not supported by this method.")
+    itemsize = 4 if gs.qd_float == qd.f32 else 8
+    block_bytes = get_gpu_block_shared_memory_bytes()
+    unit_bytes, reserved_bytes, granule_bytes, max_blocks = block_bytes, 0, 1, block_bytes // (8 * 9 * itemsize)
+    if torch.cuda.is_available():
+        # CUDA and ROCm alike: a block of these tiles is one warp (wavefront), whose slots bound the resident blocks.
+        device_property = torch.cuda.get_device_properties(torch.cuda.current_device())
+        unit_bytes = device_property.shared_memory_per_multiprocessor
+        max_blocks = device_property.max_threads_per_multi_processor // device_property.warp_size
+        if torch.version.hip:
+            # FIXME: torch exposes no allocation granularity of the local data share (LDS), which AMD sets per
+            # instruction set (see the LLVM AMDGPU usage guide), a block taking its shared memory in whole granules.
+            if device_property.gcnArchName.startswith("gfx950"):
+                granule_bytes = 1280
+            elif device_property.gcnArchName.startswith("gfx125"):
+                granule_bytes = 2048
+            else:
+                granule_bytes = 512
+        else:
+            # The driver reserves the shared memory of a compute unit beyond what one block may opt in to.
+            reserved_bytes = max(unit_bytes - device_property.shared_memory_per_block_optin, 0)
+            # FIXME: torch exposes no cap on the resident blocks of a streaming multiprocessor, which NVIDIA sets per
+            # compute capability below the warp slots (see the CUDA C++ programming guide).
+            compute_capability = (device_property.major, device_property.minor)
+            if compute_capability in ((7, 5), (8, 6), (8, 7), (10, 7)):
+                max_blocks = min(max_blocks, 16)
+            elif compute_capability in ((8, 9), (11, 0)) or device_property.major == 12:
+                max_blocks = min(max_blocks, 24)
+            else:
+                max_blocks = min(max_blocks, 32)
+
+    # The largest count of resident blocks of each candidate size
+    resident_blocks: dict[int, int] = {}
+    for n_blocks in range(1, max_blocks + 1):
+        n_bytes = (min(unit_bytes // n_blocks - reserved_bytes, block_bytes) // granule_bytes) * granule_bytes
+        tile_size = (int((math.sqrt(1.0 + 4.0 * n_bytes / itemsize) - 1.0) / 2.0) // 8) * 8
+        if tile_size >= 8:
+            resident_blocks[tile_size] = max(resident_blocks.get(tile_size, 0), n_blocks)
+    tile_sizes = sorted(resident_blocks)
+
+    # Selection ending on the largest size, by dynamic programming over the candidates: the row counts a kept size
+    # takes over from the kept size below it add their weighted drops, a row count dropping by its tightest candidate.
+    n_sizes = len(tile_sizes)
+    size_drops = []
+    for j in range(n_sizes):
+        size_drops.append([0.0] * (n_sizes + 1))
+        for i in range(-1, j):
+            row_start = tile_sizes[i] + 1 if i >= 0 else 1
+            drop = 0.0
+            for i_c in range(i + 1, j + 1):
+                rows = range(max(row_start, tile_sizes[i_c - 1] + 1 if i_c > 0 else 1), tile_sizes[i_c] + 1)
+                drop += sum(1.0 / n for n in rows) * resident_blocks[tile_sizes[i_c]] / resident_blocks[tile_sizes[j]]
+            size_drops[j][i + 1] = drop
+    total_drops = [size_drops[j][0] for j in range(n_sizes)]
+    kept_sizes_idx = [[j] for j in range(n_sizes)]
+    for _ in range(min(max_n_sizes, n_sizes) - 1):
+        total_drops_next = list(total_drops)
+        kept_sizes_idx_next = [list(kept) for kept in kept_sizes_idx]
+        for j in range(n_sizes):
+            for i in range(j):
+                drop = total_drops[i] + size_drops[j][i + 1]
+                if drop < total_drops_next[j]:
+                    total_drops_next[j] = drop
+                    kept_sizes_idx_next[j] = kept_sizes_idx[i] + [j]
+        total_drops, kept_sizes_idx = total_drops_next, kept_sizes_idx_next
+    return tuple(tile_sizes[j] for j in kept_sizes_idx[-1])
+
+
+def get_entry_point_name():
+    """
+    Name of the script the process was launched from, without directory nor extension.
+
+    Falls back to 'deephunch' whenever the process has no script to be named after, as when running interactively or
+    through 'python -c', so that a name derived from it is always a valid filename.
+    """
+    entry_point = sys.argv[0]
+    if not os.path.isfile(entry_point):
+        return "deephunch"
+    return os.path.splitext(os.path.basename(entry_point))[0]
+
+
+def get_src_dir():
+    return os.path.dirname(gs.__file__)
+
+
+def get_gen_log_dir():
+    current_time = datetime.datetime.now()
+    unique_id = current_time.strftime("%Y%m%d_%H%M%S_%f")
+    return os.path.join(os.path.dirname(gs.__file__), "gen", "logs", unique_id)
+
+
+def get_assets_dir():
+    return os.path.join(get_src_dir(), "assets")
+
+
+def geometric_mean(a, b):
+    """Geometric mean of two non-negative values: sqrt(a * b)."""
+    if a < 0 or b < 0:
+        gs.raise_exception(f"geometric_mean requires non-negative values, got {a} and {b}.")
+    return math.sqrt(a * b)
+
+
+def harmonic_mean(a, b):
+    """Harmonic mean of two non-negative values: 2 * (a * b) / (a + b)."""
+    if a < 0 or b < 0:
+        gs.raise_exception(f"harmonic_mean requires non-negative values, got {a} and {b}.")
+    if a == 0 or b == 0:
+        return 0.0
+    return 2 * (a * b) / (a + b)
+
+
+def tensor_to_cpu(x):
+    if isinstance(x, torch.Tensor):
+        x = x.detach().cpu()
+    return x
+
+
+def tensor_to_array(x: torch.Tensor, dtype: type[np.generic] | None = None) -> np.ndarray:
+    return np.asarray(tensor_to_cpu(x), dtype=dtype)
+
+
+def data_to_array(data, *, to_torch: bool = False, copy: bool | None = None):
+    """Recursively move every tensor and Quadrants array nested in a container to a CPU numpy array, keeping its layout.
+
+    With 'to_torch', each one becomes a torch tensor where it lives instead. With 'copy', the result shares no memory
+    with the tensor or Quadrants array it comes from. A numpy array is returned as it is. A named tuple, such as the
+    reading of a sensor with several outputs, becomes a dict mapping its field names to their values, which is the form
+    recorders label their data by.
+    """
+    if isinstance(data, torch.Tensor):
+        if copy:
+            data = data.clone()
+        return data if to_torch else tensor_to_array(data)
+    if isinstance(data, (qd.Tensor, qd.Field, qd.Ndarray)):
+        # The data is copied as it stands (see 'no_read_guard')
+        with no_read_guard():
+            return qd_to_torch(data, copy=copy) if to_torch else qd_to_numpy(data, copy=copy)
+    if isinstance(data, np.ndarray):
+        return data
+    if isinstance(data, tuple) and (data_asdict := getattr(data, "_asdict", None)) is not None:
+        return {k: data_to_array(v, to_torch=to_torch, copy=copy) for k, v in data_asdict().items()}
+    if isinstance(data, Mapping):
+        return {k: data_to_array(v, to_torch=to_torch, copy=copy) for k, v in data.items()}
+    if is_sequence(data):
+        return type(data)(data_to_array(v, to_torch=to_torch, copy=copy) for v in data)
+    return data
+
+
+@nb.jit(nopython=True, cache=True)
+def unique_rows(rows):
+    """Find the unique rows of a 2D integer array, in lexicographic order, as 'np.unique' along the first axis does.
+
+    The rows are sorted by a stable least-significant-digit radix sort, linear in the number of rows, which goes through
+    the digits of the last column first. Its stability makes the first row of each run of equal rows its first
+    occurrence.
+
+    Returns the unique rows, the index of the first occurrence of each unique row, the index of the unique row matching
+    each row, and the number of occurrences of each unique row.
+    """
+    n_rows, n_columns = rows.shape
+    # Unsigned arithmetic, modular, yields the exact offset of a value from the minimum of its column whatever the dtype
+    columns_value = np.empty((n_columns, n_rows), dtype=np.uint64)
+    columns_range = np.zeros(n_columns, dtype=np.uint64)
+    if n_rows:
+        for i_c in range(n_columns):
+            column_min = rows[:, i_c].min()
+            for i_r in range(n_rows):
+                columns_value[i_c, i_r] = np.uint64(rows[i_r, i_c]) - np.uint64(column_min)
+                columns_range[i_c] = max(columns_range[i_c], columns_value[i_c, i_r])
+
+    rows_order = np.arange(n_rows)
+    rows_order_next = np.empty(n_rows, dtype=np.int64)
+    # Digits of 11 bits keep the histogram of a pass small enough to stay in cache
+    digits_offset = np.empty(2049, dtype=np.int64)
+    for i_c in range(n_columns - 1, -1, -1):
+        shift = np.uint64(0)
+        while shift < np.uint64(64) and columns_range[i_c] >> shift:
+            # The digit counts are independent of the order of the rows, which spares a random access per row
+            digits_offset[:] = 0
+            for i_r in range(n_rows):
+                digits_offset[((columns_value[i_c, i_r] >> shift) & np.uint64(2047)) + 1] += 1
+            for digit in range(2048):
+                digits_offset[digit + 1] += digits_offset[digit]
+            for i in range(n_rows):
+                i_r = rows_order[i]
+                digit = (columns_value[i_c, i_r] >> shift) & np.uint64(2047)
+                rows_order_next[digits_offset[digit]] = i_r
+                digits_offset[digit] += 1
+            rows_order, rows_order_next = rows_order_next, rows_order
+            shift += np.uint64(11)
+
+    # Equal rows are compared on the rows themselves, whose values are contiguous in memory
+    is_run_start = np.empty(n_rows, dtype=np.bool_)
+    n_unique = 0
+    for i in range(n_rows):
+        i_r = rows_order[i]
+        is_run_start[i] = i == 0
+        if i > 0:
+            i_r_prev = rows_order[i - 1]
+            for i_c in range(n_columns):
+                if rows[i_r, i_c] != rows[i_r_prev, i_c]:
+                    is_run_start[i] = True
+                    break
+        n_unique += is_run_start[i]
+
+    rows_unique = np.empty((n_unique, n_columns), dtype=rows.dtype)
+    unique_index = np.empty(n_unique, dtype=np.int64)
+    unique_counts = np.zeros(n_unique, dtype=np.int64)
+    rows_inverse = np.empty(n_rows, dtype=np.int64)
+    i_u = -1
+    for i in range(n_rows):
+        i_r = rows_order[i]
+        if is_run_start[i]:
+            i_u += 1
+            unique_index[i_u] = i_r
+            for i_c in range(n_columns):
+                rows_unique[i_u, i_c] = rows[i_r, i_c]
+        unique_counts[i_u] += 1
+        rows_inverse[i_r] = i_u
+    return rows_unique, unique_index, rows_inverse, unique_counts
+
+
+def is_approx_multiple(a, b, tol=1e-7):
+    return abs(a % b) < tol or abs(b - (a % b)) < tol
+
+
+def gaussian_crosstalk_kernel(n_rows: int, n_cols: int, sigma: float, spacing: float | tuple[float, float] = 1.0):
+    """
+    Build an L1-normalized 2D Gaussian convolution kernel for spatial tactile crosstalk.
+
+    The kernel is a discrete isotropic Gaussian ``exp(-(d / sigma)**2 / 2)`` sampled on an ``n_rows x n_cols`` grid
+    centered on the self taxel, then normalized to sum 1 (so a uniform field passes through unchanged). Pass the
+    result as a sensor's ``crosstalk_kernel`` to spread each taxel's signal onto its neighbors.
+
+    ``n_rows`` and ``n_cols`` must be odd so the kernel has a center tap (the self weight). ``spacing`` is the taxel
+    pitch in the same units as ``sigma`` (a scalar, or ``(row_spacing, col_spacing)`` for an anisotropic grid);
+    default ``1.0`` measures ``sigma`` in taxel cells.
+    """
+    if n_rows % 2 == 0 or n_cols % 2 == 0:
+        raise_exception(
+            f"gaussian_crosstalk_kernel requires odd n_rows, n_cols (center tap); got ({n_rows}, {n_cols})."
+        )
+    if sigma <= 0.0:
+        raise_exception(f"gaussian_crosstalk_kernel requires sigma > 0; got {sigma}.")
+    s_row, s_col = (spacing, spacing) if isinstance(spacing, numbers.Number) else spacing
+    rows = (np.arange(n_rows, dtype=float) - n_rows // 2) * s_row
+    cols = (np.arange(n_cols, dtype=float) - n_cols // 2) * s_col
+    g_row = np.exp(-(rows**2) / (2.0 * sigma * sigma))
+    g_col = np.exp(-(cols**2) / (2.0 * sigma * sigma))
+    kernel = np.outer(g_row, g_col)
+    return kernel / kernel.sum()
+
+
+def concat_with_tensor(
+    tensor: torch.Tensor, value, expand: tuple[int, ...] | None = None, dim: int = 0, flatten: bool = False
+):
+    """Helper method to concatenate a value (not necessarily a tensor) with a tensor."""
+    if not isinstance(value, torch.Tensor):
+        if isinstance(value, (numbers.Real, np.floating, numbers.Integral, np.integer)):
+            value = [value]
+        value = torch.tensor(value, dtype=tensor.dtype, device=tensor.device)
+    if expand is not None:
+        value = value.expand(*expand)
+    if dim < 0:
+        dim = tensor.ndim + dim
+    if flatten:
+        value = value.flatten()
+    assert (
+        0 <= dim < tensor.ndim
+        and tensor.ndim == value.ndim
+        and all(e_1 == e_2 for i, (e_1, e_2) in enumerate(zip(tensor.shape, value.shape)) if e_1 > 0 and i != dim)
+    )
+    if tensor.numel() == 0:
+        # 'expand' leaves a zero stride on the broadcast dimensions, so materialize to get a real table supporting
+        # in-place writes on a subset of the rows and usable as a kernel argument
+        return value.contiguous()
+    return torch.cat([tensor, value], dim=dim)
+
+
+def make_tensor_field(shape: tuple[int, ...] = (), dtype_factory: Callable[[], torch.dtype] | None = None):
+    """
+    Helper method to create a tensor field for dataclasses.
+
+    Parameters
+    ----------
+    shape : tuple
+        The shape of the tensor field. It must have zero elements, otherwise it will trigger an exception.
+    dtype_factory : Callable[[], torch.dtype], optional
+        The factory function to create the dtype of the tensor field. Default is gs.tc_float.
+        A factory is used because gs types may not be available at the time of field creation.
+    """
+    assert not shape or math.prod(shape) == 0
+
+    def _default_factory():
+        nonlocal shape, dtype_factory
+        dtype = dtype_factory() if dtype_factory is not None else gs.tc_float
+        return torch.empty(shape, dtype=dtype, device=gs.device)
+
+    return field(default_factory=_default_factory)
+
+
+def get_default_screen(display=None):
+    """Return the screen a window should be created on, for the given pyglet display or the default one.
+
+    Leaving the display out selects whichever pyglet itself would use, headless included, which is what creating a
+    window must go through. Passing one explicitly is for callers that need a specific backend, such as the native
+    display backing a physical screen size.
+
+    MacOS enumerates only the displays that are awake, so every one of them being asleep, as happens while the screen
+    is locked, leaves pyglet with no screen at all and no way to open a window. Such a display is still online and
+    accepts a window all the same, hence the fallback, which keeps the interactive viewer available on a locked
+    machine. The main display is preferred throughout.
+    """
+    # The display namespace moved from 'pyglet.canvas' to 'pyglet.display' in pyglet 2.0.
+    displays = pyglet.canvas if pyglet.version < "2.0" else pyglet.display
+    if display is None:
+        display = displays.get_display()
+
+    try:
+        return display.get_default_screen()
+    except IndexError:
+        if pyglet.compat_platform != "darwin":
+            raise
+
+        from pyglet.libs.darwin.cocoapy import CGDirectDisplayID, quartz
+
+        CocoaScreen = import_module(f"{displays.__name__}.cocoa").CocoaScreen
+        display_ids = (CGDirectDisplayID * 256)()
+        num_displays = ctypes.c_uint32()
+        quartz.CGGetOnlineDisplayList(len(display_ids), display_ids, ctypes.byref(num_displays))
+        if not num_displays.value:
+            raise
+        online_ids = [display_ids[i] for i in range(num_displays.value)]
+        main_id = quartz.CGMainDisplayID()
+        return CocoaScreen(display, main_id if main_id in online_ids else online_ids[0])
+
+
+def try_get_display_size() -> tuple[int | None, int | None, float | None]:
+    """
+    Try to connect to display if it exists and get the screen size.
+
+    If there is no display, this function will throw an exception.
+
+    Returns
+    -------
+    screen_height : int | None
+        The height of the screen in pixels.
+    screen_width : int | None
+        The width of the screen in pixels.
+    screen_scale : float | None
+        The scale of the screen.
+    """
+    # Resolve pyglet's native display backend directly, never the placeholder headless one whose finalizer calls
+    # eglTerminate on the EGL display the offscreen renderers share. A headless process then raises here, reported as
+    # no display - the fallback to a default size is the viewer's concern. Reuse a display pyglet already has open if
+    # any (the isinstance check skips a headless one).
+    native = {
+        "darwin": ("cocoa", "CocoaDisplay"),
+        "win32": ("win32", "Win32Display"),
+        "cygwin": ("win32", "Win32Display"),
+        "linux": ("xlib", "XlibDisplay"),
+    }.get(pyglet.compat_platform)
+    if native is None:
+        raise NotImplementedError(f"No display interface available for platform '{pyglet.compat_platform}'.")
+    # The backend submodule depends on the platform and pyglet version, and a foreign-platform one fails to import
+    # (e.g. 'win32' off Windows needs Windows-only ctypes), so it cannot be a top-level import; resolving it by
+    # computed name avoids a platform-by-version tree of local imports.
+    displays = pyglet.canvas if pyglet.version < "2.0" else pyglet.display
+    Display = getattr(import_module(f"{displays.__name__}.{native[0]}"), native[1])
+    display = next((d for d in displays._displays if isinstance(d, Display)), None)
+    if display is None:
+        display = Display()
+
+    screen = get_default_screen(display)
+    if pyglet.version < "2.0":
+        screen_scale = 1.0
+    else:
+        try:
+            screen_scale = screen.get_scale()
+        except NotImplementedError:
+            screen_scale = 1.0
+    return screen.height, screen.width, screen_scale
+
+
+def has_display() -> bool:
+    """
+    Check if a display is connected.
+    """
+    try:
+        try_get_display_size()
+        return True
+    except Exception:
+        return False
+
+
+def indices_to_mask(
+    *indices: Any,
+    keepdim: bool = True,
+    to_torch: bool = True,
+    boolean_mask: bool = True,
+    raise_if_fancy: bool = False,
+    pair_rows: bool = False,
+) -> tuple[slice | int | torch.Tensor, ...]:
+    """Converts a sequence of slice-like objects into a multi-dimensional mask corresponding to their cross-product.
+
+    Out-of-bound access is not asserted at runtime: checking it would require reading the indices back from the GPU,
+    which stalls the GPU and dramatically impedes performance, in exchange for catching a mistake that should never
+    happen in production. On the contrary, an index outside the valid range selects nothing instead of raising an
+    error, and so does a range or slice counted from the end whose start lies past its stop.
+
+    Args:
+        keepdim (bool): Whether to keep all dimensions even if masks are integers. Defaults to True.
+        to_torch (bool): Whether to force casting collections to torch.Tensor.
+        boolean_mask (bool): Whether a boolean mask may be returned as it is. Defaults to True. Converting it to indices
+        reads its count of selected entries back from the device, which synchronizes the GPU. Over several axes, a
+        kept mask leaves each axis as given, for 'assign_indexed_tensor', while converted indices broadcast into their
+        cross-product. Set it to False for a consumer taking indices only, such as a kernel or a read.
+        raise_if_fancy (bool): Whether to raise if the resulting mask requires advanced indexing (aka. fancy
+        indexing), which would make extracting a slice copy.
+        pair_rows (bool): Whether an index of two dimensions selects one row of entries per entry of the index before
+        it, such as one row of items per environment, instead of taking part in the cross-product. A single row is
+        shared by all of them. Defaults to False.
+    """
+    mask: list[slice | int | torch.Tensor] = []
+
+    is_all_none = True
+    num_tensors = 0
+    is_tensor: list[bool] = [False] * len(indices)
+    for i in range(len(indices) - 1, -1, -1):
+        arg = indices[i]
+        if arg is None:
+            if is_all_none:
+                continue
+            arg = slice(None)
+        else:
+            is_all_none = False
+            if (arg_type := type(arg)) is slice:
+                pass
+            elif arg_type is range:
+                arg = slice(arg.start, arg.stop, arg.step)
+            elif arg_type is int:
+                if keepdim:
+                    # The last row has no next index to stop at, so its slice runs to the end: `slice(-1, 0)` would
+                    # name nothing at all.
+                    arg = slice(arg, arg + 1 if arg != -1 else None)
+            else:  # np.ndarray, torch.tensor, list, tuple, np.int32...
+                try:
+                    is_torch_, is_numpy_ = False, False
+                    if isinstance(arg, torch.Tensor):
+                        if not boolean_mask and arg.dtype == torch.bool:
+                            arg = arg.nonzero()[:, 0]
+                        is_scalar_ = arg.dtype != torch.bool and arg.numel() == 1
+                        is_torch_ = True
+                    elif isinstance(arg, np.ndarray):
+                        is_scalar_ = arg.size == 1
+                        is_numpy_ = True
+                    else:
+                        is_scalar_ = len(arg) == 1 and not isinstance(arg[0], (list, tuple, np.ndarray, torch.Tensor))
+                    if is_scalar_:
+                        idx = arg.item() if is_torch_ or is_numpy_ else arg[0]
+                        arg = slice(idx, idx + 1 if idx != -1 else None)
+                    else:
+                        if raise_if_fancy:
+                            gs.raise_exception("This mask requires advanced indexing but 'raise_if_fancy=True'.")
+                        if not is_torch_ and to_torch:
+                            # Must convert masks to torch if not slice or int since torch will do it anyway.
+                            # Note that being contiguous is not required and does not affect performance.
+                            # int64 is what torch indexes with: a narrower index is widened on every use, and the
+                            # in-place fills these masks feed take no other width. A caller that goes on to hand its
+                            # mask to a kernel pays for a second instantiation of it, this width beside the solver's.
+                            arg = torch.tensor(arg, dtype=torch.int64, device=gs.device)
+                        is_tensor[i] = True
+                        num_tensors += 1
+                except TypeError:
+                    # Try casting to int if 'len' is undefined.
+                    # Dealing with this fairly unusual use-case in try-except to avoid slowing down the hot path.
+                    arg = int(arg)
+                    if keepdim:
+                        arg = slice(arg, arg + 1 if arg != -1 else None)
+        mask.insert(0, arg)
+
+    # A row of entries per entry of the previous index pairs both indices, the previous one broadcast along the rows
+    for i in range(1, len(mask) if pair_rows else 0):
+        if is_tensor[i] and np.ndim(mask[i]) == 2:
+            rows = mask[i] if isinstance(mask[i], torch.Tensor) else np.asarray(mask[i])
+            if len(rows) == 1:
+                mask[i] = rows[0]
+                continue
+            prev = mask[i - 1]
+            if isinstance(prev, slice):
+                start, step = prev.start or 0, prev.step or 1
+                prev = range(start, start + len(rows) * step, step)
+            elif isinstance(prev, int):
+                prev = (prev,)
+            if isinstance(rows, torch.Tensor):
+                prev = torch.as_tensor(prev, device=rows.device)
+                if prev.dtype == torch.bool:
+                    prev = prev.nonzero()[:, 0]
+            else:
+                prev = np.asarray(prev)
+                if prev.dtype == np.bool_:
+                    prev = prev.nonzero()[0]
+            assert num_tensors == 1 + is_tensor[i - 1]
+            mask[i - 1], mask[i] = prev.reshape((-1, 1)), rows
+            num_tensors = 0
+
+    has_boolean_mask = any([isinstance(arg, torch.Tensor) and arg.dtype == torch.bool for arg in mask])
+    if num_tensors > 1 and not has_boolean_mask:
+        tensor_idx = 0
+        for i in range(len(mask)):
+            if is_tensor[i]:
+                if not isinstance(mask[i], (torch.Tensor, np.ndarray)):
+                    gs.raise_exception("Multi-dimensional masking only supported for 'to_torch=True'.")
+                shape = [1] * num_tensors
+                shape[tensor_idx] = -1
+                mask[i] = mask[i].reshape(shape)
+                tensor_idx += 1
+
+    return tuple(mask)
+
+
+def _reset_ndarray_with_views(ndarray):
+    """Drop the views 'qd_to_torch' and 'qd_to_numpy' cached on an ndarray, then reset it.
+
+    A view of an ndarray holds the ndarray through its DLPack capsule, which the garbage collector cannot see, so the
+    cached views would keep the ndarray alive for good. This replaces the reset of an ndarray caching views, which
+    'qd.reset' runs on every ndarray left and 'qd_destroy_data' on its own.
+    """
+    for name in ("_reset", "_tc", "_T_tc", "_np", "_T_np"):
+        vars(ndarray).pop(name, None)
+    ndarray._reset()
+
+
+def _maybe_transpose(tc, value, transpose):
+    if not transpose or len(value.shape) <= 1:
+        return tc
+    return tc.movedim(len(value.shape) - 1, 0)
+
+
+def _maybe_transpose_np(arr, value, transpose):
+    if not transpose or len(value.shape) <= 1:
+        return arr
+    return np.moveaxis(arr, len(value.shape) - 1, 0)
+
+
+def _apply_masks(out, value, row_mask, col_mask, keepdim, copy, *, to_torch):
+    if row_mask is None and col_mask is None:
+        return out
+    raise_if_fancy = copy is False
+    if len(value.shape) < 2:
+        if row_mask is not None and col_mask is not None:
+            gs.raise_exception("Cannot specify both row and column masks for tensor with 1D batch.")
+        mask = indices_to_mask(
+            row_mask if col_mask is None else col_mask,
+            to_torch=to_torch,
+            keepdim=keepdim,
+            raise_if_fancy=raise_if_fancy,
+        )
+    else:
+        mask = indices_to_mask(
+            row_mask, col_mask, to_torch=to_torch, keepdim=keepdim, boolean_mask=False, raise_if_fancy=raise_if_fancy
+        )
+    return out[mask]
+
+
+# The function each read of a tracked quadrants array calls first, by array, None for none (see '_register_readers')
+_array_readers: Mapping[Any, Callable[[], bool]] | None = None
+
+
+@contextmanager
+def no_read_guard() -> Iterator[None]:
+    """Lift the read guard within the block, the quadrants arrays being read as they stand (see 'qd_to_torch').
+
+    A copy of the data itself, such as a checkpoint or the save of a backward pass, holds what the arrays hold, while a
+    consumer of their values reads them current.
+    """
+    global _array_readers
+    readers, _array_readers = _array_readers, None
+    try:
+        yield
+    finally:
+        _array_readers = readers
+
+
+# TODO: The fixed cost of each call dominates the getters reading small arrays, which a dedicated pass should cut down.
+def qd_to_torch(
+    value: qd.Tensor | qd.Field | qd.Ndarray,
+    row_mask: int | range | slice | tuple[int, ...] | list[int] | torch.Tensor | np.ndarray | None = None,
+    col_mask: int | range | slice | tuple[int, ...] | list[int] | torch.Tensor | np.ndarray | None = None,
+    keepdim: bool = True,
+    transpose: bool = False,
+    *,
+    copy: bool | None = None,
+) -> torch.Tensor | None:
+    """Converts a Quadrants field / ndarray instance to a PyTorch tensor, None if neither fresh nor refreshable.
+
+    Args:
+        value (qd.Field | qd.Ndarray): Field or Ndarray to be converted.
+        row_mask (optional): Rows to extract from batch dimension after transpose if requested.
+        col_mask (optional): Columns to extract from batch dimension after transpose if requested.
+        keepdim (bool): Whether to keep all dimensions even if masks are integers.
+        transpose (bool): Whether move to front the first non-batch dimension.
+        copy (bool, optional): Wether to enforce returning a copy no matter what. None to avoid copy if possible
+        without raising an exception if not.
+    """
+    # A read with 'copy=False' is a handle on the memory, whose values its holder reads later, so it always goes on. Any
+    # other read may copy, and returns None for an array neither fresh nor refreshable (see 'ChangeLog.is_fresh').
+    if _array_readers is not None:
+        read = _array_readers.get(value)
+        if read is not None and not read() and copy is not False:
+            return None
+    if isinstance(value, qd.Tensor):
+        value = value._unwrap()
+
+    # Try efficient shortcut first and only fallback to standard branching if necessary.
+    # FIXME: Ideally one should detect if slicing would require a copy to avoid enforcing copy here.
+    is_copy = False
+    if not gs.use_zerocopy.is_supported:
+        # Transpose if necessary and requested.
+        # Note that it is worth transposing here before slicing, as it preserve row-major memory alignment in case of
+        # advanced masking, which would spare computation later on if expected from the user.
+        if copy is False:
+            gs.raise_exception("Specifying 'copy=False' is not supported by this method if 'gs.use_zerocopy=False'.")
+        # See the copy of a zero-copy view below. 'contiguous' would return as is a transposed view already laid out
+        # contiguously (size-1 dimensions), which the autograd graph refuses to write in place once a node returns it.
+        tensor = _maybe_transpose(value.to_torch(device=gs.device), value, transpose)
+        tensor = tensor.clone(memory_format=torch.contiguous_format)
+        is_copy = True
+    else:
+        try:
+            tensor = value._T_tc if transpose else value._tc
+            is_copy = False
+        except AttributeError:
+            try:
+                tc = value.to_torch(copy=False)
+            except (ValueError, RuntimeError, TypeError):
+                if copy is False:
+                    raise
+                # See the copy without zero-copy support above
+                tensor = _maybe_transpose(value.to_torch(device=gs.device), value, transpose)
+                tensor = tensor.clone(memory_format=torch.contiguous_format)
+                is_copy = True
+            else:
+                value._tc = tc
+                value._T_tc = _maybe_transpose(tc, value, True)
+                if isinstance(value, qd.Ndarray):
+                    value._reset = functools.partial(_reset_ndarray_with_views, value)
+                tensor = value._T_tc if transpose else value._tc
+                is_copy = False
+
+    if not is_copy:
+        # FIXME: DLPack may return old values on Apple Metal if sync is not systematically called manually
+        if gs.backend == gs.metal:
+            qd.sync()
+        if copy:
+            # A copy of a transposed view is laid out contiguously, which a kernel taking it requires
+            tensor = tensor.clone(memory_format=torch.contiguous_format)
+            if gs.backend == gs.metal:
+                torch.mps.synchronize()
+
+    return _apply_masks(tensor, value, row_mask, col_mask, keepdim, copy, to_torch=True)
+
+
+def _register_readers(readers: Mapping[Any, Callable[[], bool]] | None) -> None:
+    """Set the functions 'qd_to_torch' and 'qd_to_numpy' call before reading the arrays they are given for.
+
+    They let the arrays derived from the state refresh as they are read, and a copy of an array that is neither fresh
+    nor refreshable return None (see 'deephunch.engine.state_change').
+
+    Parameters
+    ----------
+    readers : Mapping[Any, Callable[[], bool]] | None
+        The function of each array, returning whether its read goes on, kept as given so that it follows the arrays
+        added later, None for none.
+    """
+    global _array_readers
+    _array_readers = readers
+
+
+qd_to_torch.register_readers = _register_readers
+
+
+def qd_to_numpy(
+    value: qd.Tensor | qd.Field | qd.Ndarray,
+    row_mask: int | range | slice | tuple[int, ...] | list[int] | torch.Tensor | np.ndarray | None = None,
+    col_mask: int | range | slice | tuple[int, ...] | list[int] | torch.Tensor | np.ndarray | None = None,
+    keepdim: bool = True,
+    transpose: bool = False,
+    *,
+    copy: bool | None = None,
+) -> np.ndarray | None:
+    """Converts a Quadrants field / ndarray instance to a Numpy array, None if neither fresh nor refreshable.
+
+    Args:
+        value (qd.Field | qd.Ndarray): Field or Ndarray to be converted.
+        row_mask (optional): Rows to extract from batch dimension after transpose if requested.
+        col_mask (optional): Columns to extract from batch dimension after transpose if requested.
+        keepdim (bool, optional): Whether to keep all dimensions even if masks are integers.
+        transpose (bool, optional): Whether move to front the first non-batch dimension.
+        copy (bool, optional): Wether to enforce returning a copy no matter what. None to avoid copy if possible
+        without raising an exception if not.
+    """
+    # See 'qd_to_torch' for the reads returning None
+    if _array_readers is not None:
+        read = _array_readers.get(value)
+        if read is not None and not read() and copy is not False:
+            return None
+    if isinstance(value, qd.Tensor):
+        value = value._unwrap()
+
+    # Try efficient shortcut first and only fallback to standard branching if necessary.
+    # FIXME: Ideally one should detect if slicing would require a copy to avoid enforcing copy here.
+    if not gs.use_zerocopy.is_supported:
+        # Transpose if necessary and requested.
+        # Note that it is worth transposing here before slicing, as it preserve row-major memory alignment in case of
+        # advanced masking, which would spare computation later on if expected from the user.
+        if copy is False:
+            gs.raise_exception("Specifying 'copy=False' is not supported if 'gs.use_zerocopy=False'.")
+        array = _maybe_transpose_np(value.to_numpy(), value, transpose)
+        is_copy = True
+    elif gs.backend != gs.cpu:
+        if copy is False:
+            gs.raise_exception("Specifying 'copy=False' is not supported by this method if 'gs.backend != gs.cpu'.")
+        array = tensor_to_array(qd_to_torch(value, transpose=transpose))
+        is_copy = True
+    else:
+        try:
+            array = value._T_np if transpose else value._np
+            is_copy = False
+        except AttributeError:
+            try:
+                tc = value.to_torch(copy=False)
+            except (RuntimeError, TypeError, ValueError):
+                if copy is False:
+                    raise
+                array = _maybe_transpose_np(value.to_numpy(), value, transpose)
+                is_copy = True
+            else:
+                # A numpy view is read-only, the arrays being written through torch views alone, which the change logs
+                # follow (see 'deephunch.engine.state_change').
+                value._np = tc.numpy()
+                value._T_np = _maybe_transpose(tc, value, True).numpy()
+                value._np.flags.writeable = value._T_np.flags.writeable = False
+                if isinstance(value, qd.Ndarray):
+                    value._reset = functools.partial(_reset_ndarray_with_views, value)
+                array = value._T_np if transpose else value._np
+                is_copy = False
+
+    if copy and not is_copy:
+        array = array.copy()
+
+    return _apply_masks(array, value, row_mask, col_mask, keepdim, copy, to_torch=False)
+
+
+def qd_destroy_data(value: qd.Tensor | qd.Field | qd.Ndarray) -> None:
+    """Free the memory of quadrants data right away, whatever still references it.
+
+    An ndarray cannot be used afterward, and every view of it, torch or numpy, points to freed memory. A field is left
+    as is, its memory belonging to the program, which 'qd.reset' frees.
+    """
+    if isinstance(value, qd.Tensor):
+        value = value._unwrap()
+    if isinstance(value, qd.Ndarray):
+        qd.lang.impl.get_runtime().prog.delete_ndarray(value.arr)
+        value._reset()
+
+
+# FIXME: quadrants#882 - the fastcache key of a torch tensor omits whether it tracks gradients, on which the argument
+# layout depends, so a launch with one after a plain one segfaults. The key takes the grad tag an ndarray carries.
+_stringify_obj_type = args_hasher.stringify_obj_type
+
+
+def _stringify_obj_type_with_grad(raise_on_templated_floats, path, obj, arg_meta, *args, **kwargs):
+    obj_repr = _stringify_obj_type(raise_on_templated_floats, path, obj, arg_meta, *args, **kwargs)
+    if isinstance(obj, torch.Tensor) and obj.requires_grad:
+        return f"{obj_repr[:-1]}-g]"
+    return obj_repr
+
+
+args_hasher.stringify_obj_type = _stringify_obj_type_with_grad
+
+# FIXME: quadrants#1003 - a reverse-mode kernel misses the fastcache, since it lacks the callable marking it pure. Both
+# are patched, the autodiff mode joining the key, without which a reverse kernel loads its forward one.
+_kernel_impl = kernel_impl._kernel_impl
+_make_source_config_key = src_hasher.make_source_config_key
+_try_load_fastcache = Kernel._try_load_fastcache
+
+
+def _kernel_impl_with_adjoint_callable(*args, level_of_class_stackframe, **kwargs):
+    # The decorator detects a class kernel from the stack, which this wrapper deepens by one frame
+    wrapped = _kernel_impl(*args, level_of_class_stackframe=level_of_class_stackframe + 1, **kwargs)
+    wrapped._adjoint.quadrants_callable = wrapped
+    return wrapped
+
+
+def _try_load_fastcache_by_autodiff_mode(kernel, args, key):
+    if kernel.autodiff_mode == AutodiffMode.NONE:
+        return _try_load_fastcache(kernel, args, key)
+    autodiff_mode = str(kernel.autodiff_mode)
+    src_hasher.make_source_config_key = lambda info: src_hasher.hash_iterable_strings(
+        (_make_source_config_key(info), autodiff_mode)
+    )
+    try:
+        return _try_load_fastcache(kernel, args, key)
+    finally:
+        src_hasher.make_source_config_key = _make_source_config_key
+
+
+kernel_impl._kernel_impl = _kernel_impl_with_adjoint_callable
+Kernel._try_load_fastcache = _try_load_fastcache_by_autodiff_mode
+
+# FIXME: quadrants#1037 - a kernel keeps the template arguments of every call across 'qd.reset', fields included, so
+# every scene outlives 'gs.destroy'. The mapper is rebuilt on reset, along with the data keyed by its instance ids.
+_kernel_reset = Kernel.reset
+
+
+def _kernel_reset_with_template_args(kernel):
+    _kernel_reset(kernel)
+    # The kernel constructor runs the reset before creating these containers, hence fresh ones
+    kernel.mapper = TemplateMapper(kernel.arg_metas, kernel.template_slot_locations)
+    kernel.used_py_dataclass_parameters_by_key_enforcing = {}
+    kernel._struct_ndarray_launch_info_by_key = {}
+    kernel._struct_primitive_launch_info_by_key = {}
+    kernel._mutable_nd_cached_key = None
+    kernel._mutable_nd_cached_val = []
+
+
+# FIXME: quadrants#1038 - a performance dispatcher keeps the arguments of its last call for the lifetime of the process,
+# so the last scene outlives 'gs.destroy'. They are released on reset, which only costs the next call its shortcut.
+_perf_dispatcher_init = PerformanceDispatcher.__init__
+
+
+def _release_dispatcher_args(dispatcher_ref):
+    dispatcher = dispatcher_ref()
+    if dispatcher is not None:
+        dispatcher._cached_args = dispatcher._cached_kwargs = dispatcher._cached_impl = None
+
+
+def _perf_dispatcher_init_released_on_reset(dispatcher, *args, **kwargs):
+    _perf_dispatcher_init(dispatcher, *args, **kwargs)
+    qd.lang.impl.on_reset(functools.partial(_release_dispatcher_args, weakref.ref(dispatcher)))
+
+
+Kernel.reset = _kernel_reset_with_template_args
+PerformanceDispatcher.__init__ = _perf_dispatcher_init_released_on_reset
+
+
+def qd_from_torch(value: qd.Tensor | qd.Field | qd.Ndarray, tensor: torch.Tensor) -> None:
+    """Write a torch tensor into a Quadrants field / ndarray, in the native layout of the latter (see qd_to_torch).
+
+    The values are cast to the dtype of the field / ndarray, whatever the backend. On Metal, call
+    `torch.mps.synchronize()` once after a batch of writes, before the next quadrants kernel reads the values (see
+    qd_zero_grad).
+    """
+    if isinstance(value, qd.Tensor):
+        value = value._unwrap()
+    if gs.use_zerocopy.is_supported:
+        view = qd_to_torch(value, copy=False)
+        # A host tensor goes to the device by chunks, as a single copy holds a staging buffer as large as the tensor,
+        # which a unified-memory GPU counts as device memory
+        if tensor.device.type == "cpu" and tensor.shape == view.shape and view.ndim > 0:
+            n_rows = max(2**24 // max(view[0].numel(), 1), 1)
+            for i_row in range(0, view.shape[0], n_rows):
+                view[i_row : i_row + n_rows].copy_(tensor[i_row : i_row + n_rows])
+        else:
+            view.copy_(tensor)
+    else:
+        value.from_torch(tensor.to(to_pytorch_type(value.dtype)))
+
+
+@qd.func
+def qd_isfinite(x):
+    """
+    Whether a scalar, or every entry of a vector or a matrix, is neither 'inf' nor 'nan'.
+
+    The magnitude test catches both at once. It holds under fast math, which assumes away the infinities that the bit
+    patterns of 'qd.math.isinf' and 'qd.math.isnan' read, and it has a reverse-mode adjoint, which their bit cast lacks.
+    """
+    # A vector built in the kernel is an expression of tensor type rather than a Matrix
+    if qd.static(isinstance(x, qd.Matrix) or (isinstance(x, qd.lang.expr.Expr) and x.is_tensor())):
+        return (qd.abs(x) < qd.math.inf).all()
+    else:
+        return qd.abs(x) < qd.math.inf
+
+
+def qd_add_grad(value: qd.Tensor, grad: torch.Tensor) -> None:
+    """Add a gradient to the adjoint of a Quadrants tensor, given in the layout of its getters (see 'qd_to_torch').
+
+    On Metal, call `torch.mps.synchronize()` once after a batch of additions, before the next quadrants kernel reads the
+    adjoint.
+    """
+    value_grad = value.grad
+    if gs.use_zerocopy.is_supported:
+        view = qd_to_torch(value_grad, transpose=True, copy=False)
+        view += grad
+    else:
+        # Without zero-copy views, the adjoint is read and written back whole, in its native layout
+        n_dims = len(value_grad.shape)
+        data = qd_to_torch(value_grad, copy=True)
+        data += grad.movedim(0, n_dims - 1) if n_dims > 1 else grad
+        qd_from_torch(value_grad, data)
+
+
+def qd_zero_grad(value) -> None:
+    """Zero the `.grad` buffers of a Quadrants field/ndarray, of every member of a struct field, or of every
+    grad-bearing slot of a `dataclass` / `@qd.data_oriented` struct-of-arrays.
+
+    Reverse-mode accumulation in DeepHunch writes through `qd.atomic_add`, so adjoint buffers must start at zero between
+    consecutive `loss.backward()` calls. Solvers call this from `reset_grad` to clear all owned adjoint storage without
+    enumerating fields by name. Zeroing goes through an in-place `zero_()` on the zero-copy torch view of each grad
+    buffer, a contiguous memset on the underlying device memory, and through `.fill` without zero-copy. The writes are
+    left unsynchronized so a caller can batch many calls under a single flush: on Metal, call `torch.mps.synchronize()`
+    after the batch and before the next quadrants kernel reads the buffers (see set_base_links_quat).
+    """
+    if value is None:
+        return
+
+    if isinstance(value, qd.StructField):
+        for key in value.keys:
+            qd_zero_grad(value.get_member_field(key))
+        return
+
+    if isinstance(value, (qd.Tensor, qd.Field, qd.Ndarray)):
+        if value.has_grad():
+            if gs.use_zerocopy.is_supported:
+                try:
+                    grad_view = qd_to_torch(value.grad, copy=False)
+                except ValueError:
+                    # A member of an AOS struct field is interleaved with the others, so it has no zero-copy view, and
+                    # Quadrants exposes no layout to test beforehand (see 'fill_data' in deephunch/utils/data.py)
+                    value.grad.fill(0.0)
+                else:
+                    grad_view.zero_()
+            else:
+                value.grad.fill(0.0)
+        return
+
+    cls = type(value)
+    if dataclasses.is_dataclass(cls):
+        # The fields alone: a struct also declares its data kind as a class variable (see DataKind in data.py)
+        attr_names = [field.name for field in dataclasses.fields(cls)]
+    else:
+        attr_names = get_own_annotations(cls)
+        if not attr_names:
+            raise_exception(
+                f"qd_zero_grad: expected `qd.Field`, `qd.Ndarray`, or a `dataclass` / `@qd.data_oriented` "
+                f"struct-of-arrays; got `{cls.__name__}`."
+            )
+    for attr_name in attr_names:
+        qd_zero_grad(getattr(value, attr_name, None))
+
+
+def get_own_annotations(cls: type) -> dict[str, Any]:
+    """Return the annotations a class declares itself, those naming something not defined yet as forward references.
+
+    Python 3.14 evaluates annotations lazily (PEP 649), leaving them out of the dictionary of the class.
+    """
+    if sys.version_info >= (3, 14):
+        # Standard library from Python 3.14 only
+        import annotationlib
+
+        return annotationlib.get_annotations(cls, format=annotationlib.Format.FORWARDREF)
+    return dict(cls.__dict__.get("__annotations__", {}))
+
+
+def sanitize_index(
+    index: int | range | slice | tuple[int, ...] | list[int] | torch.Tensor | np.ndarray | None,
+    expected_size: int,
+    max_size: int,
+    dim: int,
+    name: str,
+) -> torch.Tensor:
+    is_bool_mask = False
+    is_negative_wrap_required = False
+    if index is None:
+        index = range(max_size)
+    elif isinstance(index, slice):
+        index = range(*index.indices(max_size))
+    elif isinstance(index, (int, np.integer)):
+        index = (index + max_size if -max_size <= index < 0 else index,)
+    elif isinstance(index, range):
+        if index:
+            if -max_size <= index[0] < 0 and -max_size <= index[-1] < 0:
+                index = range(index.start + max_size, index.stop + max_size, index.step)
+            elif index[0] < 0 or index[-1] < 0:
+                index = tuple(index)
+                is_negative_wrap_required = True
+    elif isinstance(index, (list, tuple, torch.Tensor)):
+        is_bool_mask = isinstance(index, torch.Tensor) and index.dtype == torch.bool
+        is_negative_wrap_required = not is_bool_mask
+    elif isinstance(index, np.ndarray):
+        is_bool_mask = np.issubdtype(index.dtype, np.bool_)
+        is_negative_wrap_required = not is_bool_mask
+        # See broadcast_tensor for arrays with negative strides
+        if any(stride < 0 for stride in index.strides):
+            index = index.copy()
+    else:
+        gs.raise_exception(f"Expecting integer indices for `{name}`.")
+
+    try:
+        if is_bool_mask:
+            index = torch.as_tensor(index, device=gs.device)
+        else:
+            index = torch.as_tensor(index, dtype=gs.tc_int, device=gs.device)
+    except (TypeError, ValueError, RuntimeError) as err:
+        gs.raise_exception_from(f"Expecting integer indices for `{name}`.", cause=err)
+
+    if index.dtype == torch.bool:
+        if index.ndim != 1 or len(index) != max_size:
+            gs.raise_exception(f"Boolean masks for `{name}` must have shape ({max_size},).")
+        index = torch.as_tensor(torch.where(index)[0], dtype=gs.tc_int, device=gs.device)
+
+    ndim = index.ndim
+    if ndim == 0:
+        index = index[None]
+    elif ndim > 1:
+        dim_info = f" `{name}`" if name else ""
+        gs.raise_exception(f"Invalid shape: {index.shape}. Expecting 0D or 1D tensor for {dim}-th index{dim_info}.")
+
+    if expected_size != -1 and expected_size != len(index):
+        dim_info = f" `{name}`" if name else ""
+        gs.raise_exception(
+            f"Invalid shape: {index.shape}. Expecting 1D tensor of length {expected_size} for {dim}-th index{dim_info}."
+        )
+
+    if is_negative_wrap_required:
+        # Deferring the wrap until after the shared tensor conversion lets one dtype-preserving operation cover every
+        # input form that can hold negative entries
+        is_valid_negative = (-max_size <= index) & (index < 0)
+        index = torch.where(is_valid_negative, index + max_size, index)
+
+    # FIXME: This check is too expensive
+    # if not (0 <= dim_idx & dim_idx < size).all():
+    #     dim_info = f" `{name}`" if name else ""
+    #     gs.raise_exception(f"Indices out-of-range for {i}-th index{dim_info}.")
+
+    return index.contiguous()
+
+
+def get_last_occurrence(index: torch.Tensor) -> torch.Tensor:
+    """
+    Return the position of the last entry holding the same index as each entry, along the last axis of an index tensor.
+
+    The positions are computed on the device of the index, without synchronizing it. A write given an index several
+    times leaves the value of its last occurrence.
+    """
+    n_entries = index.shape[-1]
+    index_sorted, order = torch.sort(index, dim=-1, stable=True)
+    is_last_sorted = torch.ones_like(index_sorted, dtype=torch.bool)
+    is_last_sorted[..., :-1] = index_sorted[..., 1:] != index_sorted[..., :-1]
+    # The sort is stable, so the last entry of each run of equal indices is their last occurrence
+    positions = torch.arange(n_entries, device=index.device).expand_as(order)
+    run_last = torch.where(is_last_sorted, positions, n_entries).flip(-1).cummin(-1).values.flip(-1)
+    return torch.empty_like(order).scatter_(-1, order, order.gather(-1, run_last))
+
+
+def drop_repeated_index(
+    index_input: Any, index: torch.Tensor, tensors: Sequence[torch.Tensor | None], axis: int, max_size: int
+) -> tuple[torch.Tensor, tuple[torch.Tensor | None, ...]]:
+    """
+    Keep the last occurrence of every index given several times, as a write leaves it, and the matching values.
+
+    `index_input` is the index as given, and `index` its sanitized form, whose entries count `max_size` at most and
+    whose last axis holds the entries of `index_input`. An index given as a sequence is compacted along that axis, and
+    so are the tensors given along `axis`, the repeats being found where the index was given: on the host for a list, a
+    tuple or an array, and on the device for a torch tensor, whose compaction then synchronizes the device. An index
+    given one row per environment cannot be compacted, its rows differing: the earlier occurrences of a row become -1
+    instead, which the kernels skip. A range, a slice, an integer or a boolean mask holds no repeated entry, and the
+    index is returned as it is.
+    """
+    tensors = tuple(tensors)
+    if isinstance(index_input, torch.Tensor):
+        if index_input.dtype == torch.bool or index_input.numel() < 2:
+            return index, tensors
+        n_dims = index_input.ndim
+    elif isinstance(index_input, (list, tuple, np.ndarray)):
+        n_dims = np.ndim(index_input)
+    else:
+        return index, tensors
+    if n_dims > 1:
+        is_last = get_last_occurrence(index) == torch.arange(index.shape[-1], device=index.device)
+        return torch.where(is_last, index, -1), tensors
+    if isinstance(index_input, torch.Tensor):
+        index_row = index[(0,) * (index.ndim - 1)]
+    else:
+        index_row = torch.from_numpy(np.mod(index_input, max_size))
+    is_last = get_last_occurrence(index_row) == torch.arange(index_row.shape[-1], device=index_row.device)
+    positions = is_last.nonzero()[:, 0]
+    if len(positions) == len(is_last):
+        return index, tensors
+    positions = positions.to(device=index.device)
+    tensors_kept = tuple([None if tensor is None else tensor.index_select(axis, positions) for tensor in tensors])
+    return index.index_select(-1, positions), tensors_kept
+
+
+def sanitize_indices(
+    indices: Sequence[int | range | slice | tuple[int, ...] | list[int] | torch.Tensor | np.ndarray | None],
+    expected_shape: Sequence[int],
+    max_shape: Sequence[int],
+    dim_names: tuple[str, ...] | list[str],
+) -> tuple[torch.Tensor, ...]:
+    indices_: list[torch.Tensor] = []
+    expected_shape = list(expected_shape)
+    for i, dim_idx in enumerate(indices):
+        dim_idx = sanitize_index(dim_idx, expected_shape[i], max_shape[i], i, dim_names[i])
+        expected_shape[i] = len(dim_idx)
+        indices_.append(dim_idx)
+    return tuple(indices_)
+
+
+def broadcast_tensor(
+    tensor: "np.typing.ArrayLike | None",
+    dtype: torch.dtype,
+    expected_shape: tuple[int, ...] | list[int],
+    dim_names: tuple[str, ...] | list[str] | None = None,
+) -> torch.Tensor:
+    if dim_names is None:
+        dim_names = ("",) * len(expected_shape)
+
+    if tensor is None:
+        if any(size == -1 for size in expected_shape):
+            gs.raise_exception(
+                "Tensor not pre-allocated and expected shape not fully specified but allocation is not skipped."
+            )
+        return torch.empty(expected_shape, dtype=dtype, device=gs.device)
+
+    # Torch refuses to wrap a numpy array with negative strides, such as a reversed view, so it is copied first
+    if isinstance(tensor, np.ndarray) and any(stride < 0 for stride in tensor.strides):
+        tensor = tensor.copy()
+    tensor_ = torch.as_tensor(tensor, dtype=dtype, device=gs.device)
+
+    tensor_shape = tensor_.shape
+    tensor_ndim = len(tensor_shape)
+    expected_ndim = len(expected_shape)
+
+    # Expand current tensor shape with extra dims of size 1 if necessary before expanding to expected shape
+    if tensor_ndim == 0:
+        tensor_ = tensor_[None]
+    elif tensor_ndim < expected_ndim and not all(
+        [d1 == d2 or d2 == -1 for d1, d2 in zip(tensor_shape, expected_shape[-tensor_ndim:])]
+    ):
+        # Try expanding first dimensions if priority
+        for dims_valid in tuple(combinations(range(expected_ndim), tensor_ndim))[::-1]:
+            curr_idx = 0
+            expanded_shape = []
+            for i in range(expected_ndim):
+                if i in dims_valid:
+                    dim, size = tensor_.shape[curr_idx], expected_shape[i]
+                    if dim == size or dim == 1 or size == -1:
+                        expanded_shape.append(dim)
+                        curr_idx += 1
+                    else:
+                        break
+                else:
+                    expanded_shape.append(1)
+            else:
+                if curr_idx == tensor_ndim:
+                    tensor_ = tensor_.reshape(expanded_shape)
+                    break
+    elif tensor_ndim > expected_ndim:
+        gs.raise_exception(f"Invalid input shape: {tensor_shape}. Expecting at most {expected_ndim}D tensor.")
+
+    try:
+        tensor_ = tensor_.expand(expected_shape)
+    except RuntimeError as e:
+        msg_err = f"Invalid input shape: {tuple(tensor_.shape)}."
+        msg_infos: list[str] = []
+        for i, name in enumerate(dim_names):
+            size = expected_shape[i]
+            if size > 0 and i < tensor_.ndim and (dim := tensor_.shape[i]) != 1 and dim != size:
+                if name:
+                    msg_infos.append(f"Dimension {i} consistent with len({name})={size}")
+                else:
+                    msg_infos.append(f"Dimension {i} consistent with required size {size}")
+        if msg_infos:
+            msg_err += f" {' & '.join(msg_infos)}."
+        else:
+            msg_err += f" Expected shape: {tuple(expected_shape)}."
+        gs.raise_exception_from(msg_err, e)
+
+    return tensor_
+
+
+def sanitize_indexed_tensor(
+    tensor: "np.typing.ArrayLike | None",
+    dtype: torch.dtype,
+    indices: Sequence[int | range | slice | tuple[int, ...] | list[int] | torch.Tensor | np.ndarray | None],
+    expected_shape: tuple[int, ...] | list[int],
+    max_shape: tuple[int, ...] | list[int],
+    dim_names: tuple[str, ...] | list[str],
+    skip_allocation: bool = False,
+) -> tuple[torch.Tensor | None, tuple[torch.Tensor, ...]]:
+    indices_ = sanitize_indices(indices, expected_shape, max_shape, dim_names)
+
+    is_preallocated = tensor is not None
+    if is_preallocated or not skip_allocation:
+        expected_shape = [*map(len, indices_), *expected_shape[len(indices_) :]]
+        tensor = broadcast_tensor(tensor, dtype, expected_shape, dim_names).contiguous()
+
+    return tensor, tuple(indices_)
+
+
+def get_indexed_shape(tensor_shape, indices):
+    """Compute the resulting shape after advanced indexing without performing the operation."""
+    ndim = len(tensor_shape)
+
+    # Expand ellipsis if present
+    ellipsis_count = sum(1 for idx in indices if idx is Ellipsis)
+    if ellipsis_count == 1:
+        idx = indices.index(Ellipsis)
+        indices = (*indices[:idx], *(slice(None),) * (ndim - len(indices) + 1), *indices[idx + 1 :])
+    elif ellipsis_count > 1:
+        raise IndexError("Only one ellipsis (...) is allowed")
+
+    # Compute the broadcasted shape of all tensor indices
+    broadcast_shape = torch.broadcast_shapes(*[idx.shape for idx in indices if isinstance(idx, torch.Tensor)])
+
+    # Build output shape
+    output_shape = []
+    curr_idx = 0
+    inserted_broadcast = False
+    for idx in indices:
+        if isinstance(idx, int):
+            curr_idx += 1
+        elif isinstance(idx, slice):
+            start, stop, step = idx.indices(tensor_shape[curr_idx])
+            if step > 0:
+                size = max(0, (stop - start + step - 1) // step)
+            else:
+                size = max(0, (stop - start + step + 1) // step)
+            output_shape.append(size)
+            curr_idx += 1
+        else:  # isinstance(idx, torch.Tensor):
+            if not inserted_broadcast:
+                output_shape.extend(broadcast_shape)
+                inserted_broadcast = True
+            curr_idx += 1
+    output_shape += tensor_shape[curr_idx:]
+
+    return tuple(output_shape)
+
+
+def assign_indexed_tensor(
+    tensor: torch.Tensor,
+    indices: tuple[int | slice | torch.Tensor, ...],
+    value: "np.typing.ArrayLike",
+    dim_names: tuple[str, ...] | list[str] | None = None,
+) -> None:
+    # See broadcast_tensor for arrays with negative strides
+    if isinstance(value, np.ndarray) and any(stride < 0 for stride in value.strides):
+        value = value.copy()
+    # Torch writes no unsigned integer wider than 8 bits through a mask or an index on CPU and CUDA, so such a tensor is
+    # written as its signed bits, which is exact.
+    if isinstance(tensor, torch.Tensor) and tensor.dtype in _UNSIGNED_TO_SIGNED_DTYPES:
+        signed_dtype = _UNSIGNED_TO_SIGNED_DTYPES[tensor.dtype]
+        value = torch.as_tensor(value, dtype=tensor.dtype, device=tensor.device).view(signed_dtype)
+        tensor = tensor.view(signed_dtype)
+    is_value_scalar = isinstance(value, (int, float))
+
+    # A selection holding a boolean mask, its other axes being sliced or selected by indices (see 'boolean_mask' in
+    # 'indices_to_mask'), writes through one mask over the selected entries. Indexing by a boolean mask would count its
+    # entries on the device and read the count back, which synchronizes the host. Integers and an ellipsis trailing the
+    # selected axes leave the position of these axes in the selection unchanged.
+    masked_axes: list[int] = []
+    has_boolean_mask = False
+    is_tail = False
+    for axis, index in enumerate(indices):
+        if isinstance(index, slice):
+            continue
+        if not is_tail and isinstance(index, torch.Tensor) and index.ndim == 1:
+            masked_axes.append(axis)
+            has_boolean_mask = has_boolean_mask or index.dtype == torch.bool
+        elif index is Ellipsis or isinstance(index, int):
+            is_tail = True
+        else:
+            has_boolean_mask = False
+            break
+    selection = None
+    if has_boolean_mask and not isinstance(tensor, np.ndarray):
+        selection = tensor[tuple([slice(None) if isinstance(index, torch.Tensor) else index for index in indices])]
+        boolean_axes = [axis for axis in masked_axes if indices[axis].dtype == torch.bool]
+        if not is_value_scalar:
+            # The entries of a value of the rank of the selection, or omitting every axis up to the last masked one,
+            # follow from its shape alone. Any other value is broadcast against the number of selected entries by
+            # indexing, which takes the indices of several axes broadcast against each other.
+            value_shape = np.shape(value)
+            value_offset = selection.ndim - len(value_shape)
+            is_value_explicit = value_offset == 0 or value_offset > boolean_axes[-1]
+            for axis, size in enumerate(value_shape, value_offset):
+                if axis not in boolean_axes:
+                    n_entries = len(indices[axis]) if axis in masked_axes else selection.shape[axis]
+                    is_value_explicit = is_value_explicit and size in (1, n_entries)
+            if not is_value_explicit:
+                selection = None
+                if len(masked_axes) > 1:
+                    masked_indices = indices_to_mask(*[indices[axis] for axis in masked_axes], boolean_mask=False)
+                    indices = list(indices)
+                    for axis, index in zip(masked_axes, masked_indices):
+                        indices[axis] = index
+                    indices = tuple(indices)
+    if isinstance(tensor, np.ndarray):
+        value = torch.as_tensor(value)
+    elif selection is not None:
+        # The entries of the axes selected by indices are gathered, written through the masks, then scattered back,
+        # which keeps the cost of the write proportional to the number of indices.
+        indexed_axes = [axis for axis in masked_axes if indices[axis].dtype != torch.bool]
+        axes_index = [indices[axis].to(device=selection.device) for axis in indexed_axes]
+        subselections = [selection]
+        for axis, index in zip(indexed_axes, axes_index):
+            subselections.append(subselections[-1][(*(slice(None),) * axis, index)])
+        subselection = subselections[-1]
+        axes_mask: list[torch.Tensor] = []
+        for axis in boolean_axes:
+            spread = [1] * selection.ndim
+            spread[axis] = -1
+            # A mask given on the host selects on the device of the tensor
+            axes_mask.append(indices[axis].to(device=selection.device).view(spread))
+        mask = functools.reduce(torch.logical_and, axes_mask)
+        if is_value_scalar:
+            subselection.masked_fill_(mask, value)
+        else:
+            # A value spanning a masked axis, or broadcast along it, is written entry by entry, any other one holds the
+            # selected entries of the masked axes in order.
+            broadcast_shape = list(subselection.shape)
+            expanded_shape = list(subselection.shape)
+            compact_masks: list[torch.Tensor] = []
+            for axis in masked_axes:
+                broadcast_shape[axis] = value_shape[axis - value_offset] if axis >= value_offset else 1
+                if indices[axis].dtype == torch.bool and broadcast_shape[axis] not in (1, selection.shape[axis]):
+                    expanded_shape[axis] = broadcast_shape[axis]
+                    compact_masks.append(axes_mask[boolean_axes.index(axis)])
+            # An index given several times writes the value of one of its occurrences, which one being undefined.
+            # Keeping the last one, as below, would cost more than the rest of the write.
+            value = broadcast_tensor(value, selection.dtype, broadcast_shape, dim_names)
+            if compact_masks:
+                value = value.expand(expanded_shape)
+                compact_mask = functools.reduce(torch.logical_and, compact_masks)
+                # Metal mis-scatters a stride-0 broadcast mask or source, which must be dense there
+                if gs.backend == gs.metal:
+                    compact_mask = compact_mask.expand_as(subselection).contiguous()
+                    value = value.contiguous()
+                if len(compact_masks) == len(boolean_axes):
+                    subselection.masked_scatter_(compact_mask, value)
+                else:
+                    value = torch.empty_like(subselection).masked_scatter_(compact_mask, value)
+            if len(compact_masks) < len(boolean_axes):
+                torch.where(mask, value, subselection, out=subselection)
+        for i in range(len(indexed_axes) - 1, -1, -1):
+            subselections[i][(*(slice(None),) * indexed_axes[i], axes_index[i])] = subselections[i + 1]
+        return
+    # A single value written over a selection of one axis has faster forms than advanced indexing, which stages an
+    # index tensor and a scatter that dominate a write this small: the buffer is filled whole when every axis is taken
+    # whole, and a selection of rows fills through the rows.
+    elif is_value_scalar:
+        axes = [axis for axis, index in enumerate(indices) if not (isinstance(index, slice) and index == slice(None))]
+        if not axes:
+            tensor.fill_(value)
+            return
+        if len(axes) == 1:
+            axis = axes[0]
+            index = indices[axis]
+            if isinstance(index, torch.Tensor) and index.ndim == 1 and index.dtype == torch.int64:
+                tensor.index_fill_(axis, index, value)
+                return
+    repeatable_axes = []
+    if not isinstance(tensor, np.ndarray):
+        # A loop spares the frame of a comprehension, which the many small writes of the hot path would pay
+        for axis, index in enumerate(indices):
+            if isinstance(index, torch.Tensor) and index.dtype != torch.bool and index.numel() > 1:
+                repeatable_axes.append(axis)
+    # Every occurrence of an index given several times writes the value of its last occurrence, since a scatter writes
+    # them in no defined order. The tensors and integers indexing the axes broadcast against each other into one block
+    # of axes of the selection, which takes the place of the first of them when they are contiguous, and leads the
+    # selection otherwise. Each tensor repeats its entries along its last axis of size above 1 in the block, so one row
+    # per environment (see 'pair_rows' in 'indices_to_mask') repeats them within each row, and a repeated environment
+    # writes its last row alone, as the kernels do.
+    if repeatable_axes:
+        advanced_axes = [axis for axis, index in enumerate(indices) if not isinstance(index, slice)]
+        if not is_value_scalar:
+            value = broadcast_tensor(value, tensor.dtype, get_indexed_shape(tensor.shape, indices), dim_names)
+        is_advanced_axes_contiguous = advanced_axes == list(range(advanced_axes[0], advanced_axes[-1] + 1))
+        block_start = advanced_axes[0] if is_advanced_axes_contiguous else 0
+        block_ndim = max([indices[axis].ndim for axis in repeatable_axes])
+        indices = list(indices)
+        for axis in repeatable_axes:
+            index_shape = (1,) * (block_ndim - indices[axis].ndim) + tuple(indices[axis].shape)
+            block_axis = [i for i, size in enumerate(index_shape) if size > 1][-1]
+            rows_axes_and_shapes = []
+            for other_axis in repeatable_axes:
+                other_shape = (1,) * (block_ndim - indices[other_axis].ndim) + tuple(indices[other_axis].shape)
+                if other_axis != axis and other_shape[block_axis] > 1:
+                    rows_axes_and_shapes.append((other_axis, other_shape))
+            # Every occurrence of an index written a single value writes the same, unless it carries a row
+            if is_value_scalar and not rows_axes_and_shapes:
+                continue
+            index = indices[axis].reshape(index_shape)
+            positions = get_last_occurrence(index.movedim(block_axis, -1)).movedim(-1, block_axis)
+            if not is_value_scalar:
+                # An index may live on another device than the values, which a scatter accepts and a gather does not
+                positions_shape = (1,) * block_start + index_shape + (1,) * (value.ndim - block_start - block_ndim)
+                positions_value = positions.reshape(positions_shape).to(device=value.device)
+                value = torch.take_along_dim(value, positions_value, dim=block_start + block_axis)
+            for other_axis, other_shape in rows_axes_and_shapes:
+                other_index = indices[other_axis].reshape(other_shape)
+                indices[other_axis] = torch.take_along_dim(other_index, positions, dim=block_axis)
+        indices = tuple(indices)
+
+    try:
+        tensor[indices] = value
+    except (TypeError, RuntimeError):
+        # Try extended broadcasting as a fallback to avoid slowing down the hot path
+        indexed_shape = get_indexed_shape(tensor.shape, indices) if indices else tensor.shape
+        tensor[indices] = broadcast_tensor(value, tensor.dtype, indexed_shape, dim_names)

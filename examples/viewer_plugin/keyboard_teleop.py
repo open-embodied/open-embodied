@@ -20,9 +20,9 @@ import random
 
 import numpy as np
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.vis.keybindings import Key, KeyAction, Keybind
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.vis.keybindings import Key, KeyAction, Keybind
 
 if __name__ == "__main__":
     gs.init(precision="32", logging_level="info", backend=gs.cpu)

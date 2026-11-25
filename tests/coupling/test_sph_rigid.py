@@ -3,9 +3,9 @@ import math
 import pytest
 import torch
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.utils.misc import qd_to_numpy
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.utils.misc import qd_to_numpy
 
 from ..utils.assertions import assert_allclose, assert_equal
 

@@ -12,8 +12,8 @@ if find_spec("uipc") is None:
     pytest.skip(SKIP_NO_IPC, allow_module_level=True)
 
 
-import genesis as gs
-from genesis.utils.misc import tensor_to_array, qd_to_numpy
+import deephunch as gs
+from deephunch.utils.misc import tensor_to_array, qd_to_numpy
 
 from ..utils.assertions import assert_allclose
 from ..utils.assets import get_hf_dataset
@@ -24,7 +24,7 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from genesis.engine.couplers import IPCCoupler
+    from deephunch.engine.couplers import IPCCoupler
 
 
 @pytest.mark.slow  # ~250s
@@ -136,7 +136,7 @@ def test_robot_grasp_fem(coup_type, show_viewer):
     # Setting initial configuration is not supported by coupling mode "external_articulation"
     # qpos = franka.inverse_kinematics(link=end_effector, pos=[0.65, 0.0, 0.4], quat=[0.0, 1.0, 0.0, 0.0])
     qpos = [-0.9482, 0.6910, 1.2114, -1.6619, -0.6739, 1.8685, 1.1844, 0.0112, 0.0096]
-    with pytest.raises(gs.GenesisException) if coup_type == "external_articulation" else nullcontext():
+    with pytest.raises(gs.DeepHunchException) if coup_type == "external_articulation" else nullcontext():
         franka.set_dofs_position(qpos)
         franka.control_dofs_position(qpos)
     if coup_type == "external_articulation":

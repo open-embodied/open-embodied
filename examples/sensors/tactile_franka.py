@@ -12,14 +12,14 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.recorders.plotters import IS_MATPLOTLIB_AVAILABLE
-from genesis.vis.keybindings import Key, KeyAction, Keybind
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.recorders.plotters import IS_MATPLOTLIB_AVAILABLE
+from deephunch.vis.keybindings import Key, KeyAction, Keybind
 
 if TYPE_CHECKING:
-    from genesis.engine.entities.rigid_entity import RigidEntity
-    from genesis.engine.sensors.base_sensor import Sensor
+    from deephunch.engine.entities.rigid_entity import RigidEntity
+    from deephunch.engine.sensors.base_sensor import Sensor
 
 OBJ_DENSITY = 300
 OBJ_SIZE = 0.04

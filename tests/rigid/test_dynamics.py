@@ -6,11 +6,11 @@ import torch
 
 from quadrants.lang._perf_dispatch import PerformanceDispatcher
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.engine.solvers.rigid.constraint import solver as constraint_solver
-from genesis.engine.solvers.rigid.data import RigidConfig
-from genesis.utils.misc import qd_to_numpy, tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.engine.solvers.rigid.constraint import solver as constraint_solver
+from deephunch.engine.solvers.rigid.data import RigidConfig
+from deephunch.utils.misc import qd_to_numpy, tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 
@@ -68,9 +68,9 @@ def test_gravity(show_viewer, tol):
     scene.rigid_solver.set_gravity([0.0, 0.0, 3.0], envs_idx=-1)
     # A vector that is not one, and one vector per environment where a single environment was named: rejected by
     # shape, with the shape said, rather than by whatever the write would have made of it.
-    with pytest.raises(gs.GenesisException, match="Invalid input shape"):
+    with pytest.raises(gs.DeepHunchException, match="Invalid input shape"):
         scene.rigid_solver.set_gravity([0.0, -10.0])
-    with pytest.raises(gs.GenesisException, match="Invalid input shape"):
+    with pytest.raises(gs.DeepHunchException, match="Invalid input shape"):
         scene.rigid_solver.set_gravity([[0.0, 0.0, -10.0], [0.0, 0.0, -10.0]], envs_idx=1)
 
     scene.step()
@@ -353,11 +353,11 @@ def test_apply_external_wrench(xml_path, show_viewer, tol):
         tol=5e-7,
     )
 
-    with pytest.raises(gs.GenesisException, match="'ref' must be one of"):
+    with pytest.raises(gs.DeepHunchException, match="'ref' must be one of"):
         duck.base_link.apply_external_wrench(force=(0, 0, 0), ref=gs.link_ref_frame.root_COM)
-    with pytest.raises(gs.GenesisException, match="Either 'force' or 'torque'"):
+    with pytest.raises(gs.DeepHunchException, match="Either 'force' or 'torque'"):
         duck.base_link.apply_external_wrench()
-    with pytest.raises(gs.GenesisException, match="'pos' requires 'force'"):
+    with pytest.raises(gs.DeepHunchException, match="'pos' requires 'force'"):
         duck.base_link.apply_external_wrench(torque=(0, 0, 0), pos=lever_arm)
 
     # Armature on a free joint adds to the inertia the solver turns the body with. A torque from rest spins the body up
@@ -1035,11 +1035,11 @@ def test_merge_matches_single_equivalent_entity(merged_arm_hand_models, box_posi
     # Chained attach runs before its own parent is attached: re-rooting is transitive, so the order is free.
     hand_chained.attach(hand, "palm")
     if box_position == "between":
-        with np.testing.assert_raises_regex(gs.GenesisException, "Instantiate attached entities consecutively"):
+        with np.testing.assert_raises_regex(gs.DeepHunchException, "Instantiate attached entities consecutively"):
             hand.attach(arm, "tip")
         return
     if box_position == "inside":
-        with np.testing.assert_raises_regex(gs.GenesisException, "Declare the attached-onto tree last"):
+        with np.testing.assert_raises_regex(gs.DeepHunchException, "Declare the attached-onto tree last"):
             hand.attach(arm, "tip")
         return
     hand.attach(arm, "tip")
@@ -1065,7 +1065,7 @@ def test_merge_matches_single_equivalent_entity(merged_arm_hand_models, box_posi
                 file=hand_xml,
             ),
         )
-        with np.testing.assert_raises_regex(gs.GenesisException, "Load the parent's trees as separate entities"):
+        with np.testing.assert_raises_regex(gs.DeepHunchException, "Load the parent's trees as separate entities"):
             hand_box.attach(arm, "freebox")
         return
     scene.build(n_envs=n_envs)
@@ -1174,7 +1174,7 @@ def test_cholesky_tiling(monkeypatch, tol):
         assert np.linalg.norm(Mgrad) > 5.0
         values.append(Mgrad)
 
-    # analysis for choice tolerance: https://github.com/Genesis-Embodied-AI/Genesis/pull/2659#discussion_r3041684256
+    # analysis for choice tolerance: https://github.com/DeepHunch-Embodied-AI/DeepHunch/pull/2659#discussion_r3041684256
     assert_allclose(*values, tol=5e-4)
 
 
@@ -1281,7 +1281,7 @@ def test_solve_arm_equivalence(n_stack, n_grid, monkeypatch, show_viewer, tol):
             constraint_solver.func_solve_body(*args)
             accelerations.append(qd_to_numpy(constraint_state.qacc, copy=True))
 
-    monkeypatch.setattr("genesis.engine.solvers.rigid.rigid_solver.func_solve_body", solve_compared)
+    monkeypatch.setattr("deephunch.engine.solvers.rigid.rigid_solver.func_solve_body", solve_compared)
 
     # Every box is pushed and twisted by a new random wrench each step, a fraction of what tips or slides it, so that no
     # solve starts from a warm start that already resolves it: resting boxes would leave both implementations returning

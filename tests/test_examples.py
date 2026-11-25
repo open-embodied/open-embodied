@@ -46,7 +46,7 @@ def _discover_examples():
 
 
 @pytest.mark.examples
-@pytest.mark.parametrize("backend", [None])  # Disable genesis initialization at worker level
+@pytest.mark.parametrize("backend", [None])  # Disable deephunch initialization at worker level
 @pytest.mark.parametrize("file", _discover_examples(), ids=lambda p: p.relative_to(EXAMPLES_DIR).as_posix())
 def test_example(file: Path):
     # Check for required optional dependencies (script-level and inherited from parent dirs)

@@ -1,13 +1,13 @@
 import math
 from typing import TYPE_CHECKING
 
-import genesis as gs
-from genesis.vis.camera import Camera
+import deephunch as gs
+from deephunch.vis.camera import Camera
 
 from quadcopter_controller import DronePIDController
 
 if TYPE_CHECKING:
-    from genesis.engine.entities import DroneEntity
+    from deephunch.engine.entities import DroneEntity
 
 
 base_rpm = 14468.429183500699

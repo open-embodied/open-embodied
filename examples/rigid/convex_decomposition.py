@@ -3,7 +3,7 @@ import os
 
 from huggingface_hub import snapshot_download
 
-import genesis as gs
+import deephunch as gs
 
 
 def main():
@@ -37,7 +37,7 @@ def main():
     for i, asset_name in enumerate(("donut_0", "mug_1", "cup_2", "apple_15")):
         asset_path = snapshot_download(
             repo_type="dataset",
-            repo_id="Genesis-Intelligence/assets",
+            repo_id="DeepHunch-Intelligence/assets",
             revision="4d96c3512df4421d4dd3d626055d0d1ebdfdd7cc",
             allow_patterns=f"{asset_name}/*",
             max_workers=1,

@@ -3,9 +3,9 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.utils.misc import tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.utils.misc import tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 from ..utils.mujoco_parity import (
@@ -68,8 +68,8 @@ def test_equality_link(gs_sim, mj_sim):
     np.random.seed(0)
     qpos = np.random.rand(gs_sim.rigid_solver.n_qs) * 0.1
 
-    # Note that the world frame in which weld constraint is computed is different between Mujoco and Genesis for sites.
-    # Mujoco is using site 1, whereas Genesis is using parent link frame of site 1 since it has no notion of site.
+    # Note that the world frame in which weld constraint is computed is different between Mujoco and DeepHunch for sites.
+    # Mujoco is using site 1, whereas DeepHunch is using parent link frame of site 1 since it has no notion of site.
     ignore_constraints = np.any(
         (mj_sim.model.eq_objtype == mujoco.mjtObj.mjOBJ_SITE) & (mj_sim.model.eq_type == mujoco.mjtEq.mjEQ_WELD)
     )
@@ -117,7 +117,7 @@ def test_box_plane_dynamics(gs_sim, mj_sim, tol):
 @pytest.mark.parametrize("gs_solver, gs_integrator", [(gs.constraint_solver.Newton, gs.integrator.implicitfast)])
 @pytest.mark.parametrize("backend", [gs.cpu])
 def test_scene_aggregates_hold_across_entities(gs_sim, mj_sim, tol):
-    # Mujoco holds the three boxes in one model while Genesis holds one entity per box. The mean inertia the constraint
+    # Mujoco holds the three boxes in one model while DeepHunch holds one entity per box. The mean inertia the constraint
     # solver scales its tolerances by is a scene aggregate, so it must come out the same however the same bodies are
     # grouped into entities, which one entity per box is what tells apart. The sliding box carries an armature on a
     # body MuJoCo weighs by a rule of its own, so its constraint weights hold the general rule both engines settle on.
@@ -336,7 +336,7 @@ def test_general_actuator(gs_sim, mj_sim, tol):
     assert_allclose(entity.get_dofs_kv(dofs_idx_local=[0]), 2.0, tol=tol)
 
     # get_dofs_kp raises for all DOFs (joint 1 is non-PD-reducible from parser)
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         entity.get_dofs_kp()
 
     # but succeeds for the PD joint (joint 0)
@@ -369,7 +369,7 @@ def test_general_actuator(gs_sim, mj_sim, tol):
     entity.control_dofs_position([0.5, 0.3, 0.0])
     entity.control_dofs_force(5.0, dofs_idx_local=[2])
 
-    # Pre-step so that Genesis computes qf_applied (needed for data consistency checks)
+    # Pre-step so that DeepHunch computes qf_applied (needed for data consistency checks)
     mj_sim.data.qpos[:] = tensor_to_array(entity.get_qpos())
     mj_sim.data.qvel[:] = tensor_to_array(entity.get_dofs_velocity())
     mujoco.mj_step(mj_sim.model, mj_sim.data)

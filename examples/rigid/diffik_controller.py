@@ -2,7 +2,7 @@ import argparse
 
 import numpy as np
 
-import genesis as gs
+import deephunch as gs
 
 config = {
     "ur5e": {"mjcf_file": "xml/universal_robots_ur5e/ur5e.xml", "end_effector_link": "ee_virtual_link"},

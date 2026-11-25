@@ -8,7 +8,7 @@ import os
 
 import matplotlib.pyplot as plt
 
-import genesis as gs
+import deephunch as gs
 
 
 def main():

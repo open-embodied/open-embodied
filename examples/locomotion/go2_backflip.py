@@ -4,7 +4,7 @@ import os
 import torch
 from go2_env import Go2Env
 
-import genesis as gs
+import deephunch as gs
 
 
 def get_cfgs():

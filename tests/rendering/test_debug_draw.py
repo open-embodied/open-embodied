@@ -4,12 +4,12 @@ import sys
 import numpy as np
 import pytest
 
-import genesis as gs
-import genesis.utils.geom as gu
-import genesis.utils.mesh as mu
-from genesis.engine.render_context import Points
-from genesis.engine.solvers.rigid.rigid_solver import HIBERNATION_TINT
-from genesis.utils.misc import qd_to_torch
+import deephunch as gs
+import deephunch.utils.geom as gu
+import deephunch.utils.mesh as mu
+from deephunch.engine.render_context import Points
+from deephunch.engine.solvers.rigid.rigid_solver import HIBERNATION_TINT
+from deephunch.utils.misc import qd_to_torch
 
 from ..conftest import IS_INTERACTIVE_VIEWER_AVAILABLE, SKIP_NO_VIEWER
 from ..utils.assertions import assert_allclose, assert_equal, rgb_array_to_png_bytes

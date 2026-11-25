@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-import genesis as gs
-import genesis.utils.geom as gu
+import deephunch as gs
+import deephunch.utils.geom as gu
 
 from ..utils.assertions import assert_allclose
 
@@ -116,9 +116,9 @@ def test_gravity_force(free_box, n_envs, show_viewer, tol):
         )
     )
 
-    with pytest.raises(gs.GenesisException, match="requires entity_idx >= 0"):
+    with pytest.raises(gs.DeepHunchException, match="requires entity_idx >= 0"):
         scene.add_sensor(gs.sensors.Contact())
-    with pytest.raises(gs.GenesisException, match="requires entity_idx >= 0"):
+    with pytest.raises(gs.DeepHunchException, match="requires entity_idx >= 0"):
         scene.add_sensor(gs.sensors.ContactForce())
     scene.build(n_envs=n_envs)
 

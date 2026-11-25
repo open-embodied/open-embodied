@@ -7,9 +7,9 @@ import pytest
 import torch
 import trimesh
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.utils.misc import qd_to_numpy, tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.utils.misc import qd_to_numpy, tensor_to_array
 
 from ..utils.assertions import assert_allclose
 from ..utils.assets import get_hf_dataset
@@ -429,7 +429,7 @@ def test_shell_crossing_recovery(show_viewer):
 @pytest.mark.parametrize("backend", [gs.cpu])
 @pytest.mark.parametrize("direction", ["down", "up"])
 def test_concentric_contact(direction, show_viewer):
-    PITCH = 3.0e-3  # matches genesis/assets/meshes/bolt_nut/generate_bolt_nut.py
+    PITCH = 3.0e-3  # matches deephunch/assets/meshes/bolt_nut/generate_bolt_nut.py
     PITCH_RATE = PITCH / (2.0 * np.pi)  # axial advance per radian of rotation
     # Head top is at z = 11 mm, so the 18 mm nut seats with its center at z ~ 20 mm. Driving down, release just above
     # that so the nut coasts onto the head rather than being driven into it. Driving up, release just below the shaft

@@ -11,9 +11,9 @@ import os
 
 import numpy as np
 
-import genesis as gs
-from genesis.utils.misc import tensor_to_array
-from genesis.vis.keybindings import Key, KeyAction, Keybind
+import deephunch as gs
+from deephunch.utils.misc import tensor_to_array
+from deephunch.vis.keybindings import Key, KeyAction, Keybind
 
 # Teleop
 KEY_DPOS = 0.08

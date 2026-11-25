@@ -3,7 +3,7 @@ import os
 
 import numpy as np
 
-import genesis as gs
+import deephunch as gs
 
 
 def main():

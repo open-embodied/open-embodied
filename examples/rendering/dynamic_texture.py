@@ -21,16 +21,16 @@ import numpy as np
 import trimesh
 from huggingface_hub import snapshot_download
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.utils.misc import tensor_to_array, with_lock
-from genesis.vis.keybindings import Key, KeyAction, Keybind, MouseButton
-from genesis.vis.viewer_plugins import EVENT_HANDLE_STATE, EVENT_HANDLED, RaycasterViewerPlugin
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.utils.misc import tensor_to_array, with_lock
+from deephunch.vis.keybindings import Key, KeyAction, Keybind, MouseButton
+from deephunch.vis.viewer_plugins import EVENT_HANDLE_STATE, EVENT_HANDLED, RaycasterViewerPlugin
 
 if TYPE_CHECKING:
-    from genesis.engine.entities.rigid_entity import RigidVisGeom
-    from genesis.engine.scene import Scene
-    from genesis.ext.pyrender.node import Node
+    from deephunch.engine.entities.rigid_entity import RigidVisGeom
+    from deephunch.engine.scene import Scene
+    from deephunch.ext.pyrender.node import Node
 
 TEXTURE_RESOLUTION = (256, 256)
 
@@ -204,7 +204,7 @@ def main():
     )
     asset_path = snapshot_download(
         repo_type="dataset",
-        repo_id="Genesis-Intelligence/assets",
+        repo_id="DeepHunch-Intelligence/assets",
         revision="d571c25abb363a5facc603b7f6be62e6e0ad46da",
         allow_patterns="textures/duckurcqa.png",
         max_workers=1,

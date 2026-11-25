@@ -7,15 +7,15 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
-from genesis.engine.render_context import StaticMeshBatch
-from genesis.utils.geom import pos_lookat_up_to_T, trans_quat_to_T, trans_to_T
-from genesis.utils.misc import tensor_to_array
+import deephunch as gs
+from deephunch.engine.render_context import StaticMeshBatch
+from deephunch.utils.geom import pos_lookat_up_to_T, trans_quat_to_T, trans_to_T
+from deephunch.utils.misc import tensor_to_array
 
 from ..conftest import SKIP_NO_LUISA, SKIP_NO_MADRONA
 from ..utils.assertions import assert_allclose, assert_equal, rgb_array_to_png_bytes
 
-# LuisaRenderPy is found through the path that genesis appends as it is imported
+# LuisaRenderPy is found through the path that deephunch appends as it is imported
 ENABLE_RAYTRACER = find_spec("LuisaRenderPy") is not None
 ENABLE_MADRONA = find_spec("gs_madrona") is not None
 

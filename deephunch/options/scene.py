@@ -1,0 +1,115 @@
+"""Every option a scene is created with, gathered as one object."""
+
+import numpy as np
+
+from pydantic import Field, model_validator
+
+import deephunch as gs
+
+from .options import Options
+from .profiling import ProfilingOptions
+from .renderers import Rasterizer, RendererOptions
+from .solvers import (
+    BaseCouplerOptions,
+    FEMOptions,
+    KinematicOptions,
+    LegacyCouplerOptions,
+    MPMOptions,
+    PBDOptions,
+    RigidOptions,
+    SimOptions,
+    SPHOptions,
+)
+from .vis import ViewerOptions, VisOptions
+
+
+class SceneOptions(Options):
+    """Every option a scene is created with, as one object.
+
+    Each field bears the name of the 'Scene' argument that carries it, without the '_options' suffix. Each states its
+    own default and falls back to it when given None, so a scene names an option only to override it, and every field
+    holds one once the options exist.
+
+    Every option inherits from the simulation options the quantities it declares and leaves unset, which in practice
+    is the solvers, since no other option shares a field with them. That resolution happens here, so every consumer
+    reads the resolved value.
+    """
+
+    sim: SimOptions = Field(default_factory=SimOptions)
+    rigid: RigidOptions = Field(default_factory=RigidOptions)
+    kinematic: KinematicOptions = Field(default_factory=KinematicOptions)
+    mpm: MPMOptions = Field(default_factory=MPMOptions)
+    sph: SPHOptions = Field(default_factory=SPHOptions)
+    fem: FEMOptions = Field(default_factory=FEMOptions)
+    pbd: PBDOptions = Field(default_factory=PBDOptions)
+    coupler: BaseCouplerOptions = Field(default_factory=LegacyCouplerOptions)
+    vis: VisOptions = Field(default_factory=VisOptions)
+    viewer: ViewerOptions = Field(default_factory=ViewerOptions)
+    profiling: ProfilingOptions = Field(default_factory=ProfilingOptions)
+    renderer: RendererOptions = Field(default_factory=Rasterizer)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _given_or_declared(cls, values):
+        """Give a field passed as None its declared default, exactly like a field the caller omits.
+
+        'Scene.__init__' passes every field, as None where the caller gave nothing, so the declared default is
+        reached here rather than by omission.
+        """
+        if isinstance(values, dict):
+            return {name: value for name, value in values.items() if value is not None}
+        return values
+
+    def model_post_init(self, context) -> None:
+        # The deprecated visualization options stand for those of the solvers, an explicit conflicting value raising
+        vis = self.vis
+        conflicts = []
+        for solver_options, updates in (
+            (self.kinematic, dict(link_frames=vis.show_link_frame, link_frame_size=vis.link_frame_size)),
+            (
+                self.rigid,
+                dict(
+                    link_frames=vis.show_link_frame,
+                    link_frame_size=vis.link_frame_size,
+                    contact_force_scale=vis.contact_force_scale,
+                ),
+            ),
+            (self.mpm, dict(boundary=vis.visualize_mpm_boundary, n_support_neighbors=vis.n_support_neighbors)),
+            (self.sph, dict(boundary=vis.visualize_sph_boundary)),
+            (self.pbd, dict(boundary=vis.visualize_pbd_boundary, n_support_neighbors=vis.n_support_neighbors)),
+        ):
+            updates = {name: value for name, value in updates.items() if value is not None}
+            values_set = solver_options.vis.model_dump(include=updates.keys() & solver_options.vis.model_fields_set)
+            for name, value in values_set.items():
+                if not np.isclose(value, updates[name], rtol=0.0, atol=gs.EPS):
+                    conflicts.append(f"'{type(solver_options.vis).__name__}.{name}'")
+            solver_options.vis = solver_options.vis.model_copy(update=updates)
+        if conflicts:
+            gs.raise_exception(
+                f"Conflicting values set for {', '.join(conflicts)} and their deprecated counterpart of VisOptions. "
+                "Set the solver options alone."
+            )
+
+        # Validate rigid_options against sim_options
+        if self.rigid.box_box_detection is None:
+            self.rigid.box_box_detection = not self.sim.requires_grad
+        elif self.rigid.box_box_detection and self.sim.requires_grad:
+            gs.raise_exception(
+                "`rigid_options.box_box_detection` cannot be True when `sim_options.requires_grad` is True."
+            )
+        if self.rigid.use_gjk_collision is None:
+            self.rigid.use_gjk_collision = self.sim.requires_grad
+        elif not self.rigid.use_gjk_collision and self.sim.requires_grad:
+            gs.raise_exception(
+                "`rigid_options.use_gjk_collision` cannot be False when `sim_options.requires_grad` is True."
+            )
+        if self.rigid.enable_mujoco_compatibility and self.sim.requires_grad:
+            gs.raise_exception(
+                "`rigid_options.enable_mujoco_compatibility` cannot be True when `sim_options.requires_grad` is True."
+            )
+
+        # Each option inherits from the simulation options the values it leaves unset, on fields it declares.
+        # 'model_copy_from' fills only fields both sides declare, so one loop covers every option by name.
+        for name, option in dict(self).items():
+            if name != "sim":
+                self.__dict__[name] = option.model_copy_from(self.sim)

@@ -14,15 +14,15 @@ import numpy as np
 import torch
 import trimesh
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.recorders.plotters import IS_MATPLOTLIB_AVAILABLE
-from genesis.utils.misc import tensor_to_array
-from genesis.vis.keybindings import Key, KeyAction, Keybind
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.recorders.plotters import IS_MATPLOTLIB_AVAILABLE
+from deephunch.utils.misc import tensor_to_array
+from deephunch.vis.keybindings import Key, KeyAction, Keybind
 
 if TYPE_CHECKING:
-    from genesis.engine.entities.rigid_entity import RigidEntity
-    from genesis.engine.sensors.base_sensor import Sensor
+    from deephunch.engine.entities.rigid_entity import RigidEntity
+    from deephunch.engine.sensors.base_sensor import Sensor
 
 KEY_DPOS = 0.001
 FORCE_SCALE = 100.0

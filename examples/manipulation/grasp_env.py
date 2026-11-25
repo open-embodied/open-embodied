@@ -5,10 +5,10 @@ from typing import Literal
 import torch
 from tensordict import TensorDict
 
-import genesis as gs
-from genesis.options.sensors import BatchRendererCameraOptions, RasterizerCameraOptions
-from genesis.vis.camera import Camera
-from genesis.utils.geom import (
+import deephunch as gs
+from deephunch.options.sensors import BatchRendererCameraOptions, RasterizerCameraOptions
+from deephunch.vis.camera import Camera
+from deephunch.utils.geom import (
     xyz_to_quat,
     transform_quat_by_quat,
     transform_by_trans_quat,
@@ -474,7 +474,7 @@ class Manipulator:
 
     def _gs_ik(self, action: torch.Tensor) -> torch.Tensor:
         """
-        Genesis inverse kinematics
+        DeepHunch inverse kinematics
         """
         delta_position = action[:, :3]
         delta_orientation = action[:, 3:6]

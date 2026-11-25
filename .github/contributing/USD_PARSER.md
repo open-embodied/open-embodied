@@ -1,24 +1,24 @@
 ---
-description: Rules and guidelines for developing and fixing the USD parser in Genesis
+description: Rules and guidelines for developing and fixing the USD parser in DeepHunch
 ---
 
 # USD Parser Rules
 
 ## Overview
 
-This document describes the rules and guidelines for developing and fixing the USD parser in Genesis.
+This document describes the rules and guidelines for developing and fixing the USD parser in DeepHunch.
 
-**Before starting:** Read the [USD Parser Specification](../../genesis/utils/usd/UsdParserSpec.md) to understand the mathematical foundations, transform handling, and architectural constraints.
+**Before starting:** Read the [USD Parser Specification](../../deephunch/utils/usd/UsdParserSpec.md) to understand the mathematical foundations, transform handling, and architectural constraints.
 
 ## Core Rules
 
 ### 1. Scope Restriction: No Simulator-Side Modifications
 
-**CRITICAL:** You MUST NOT modify any code outside the `genesis/utils/usd` directory.
+**CRITICAL:** You MUST NOT modify any code outside the `deephunch/utils/usd` directory.
 
-- **Allowed:** Changes to files in `genesis/utils/usd/` (e.g., `usd_rigid_entity.py`, `usd_utils.py`, `usd_geometry.py`)
+- **Allowed:** Changes to files in `deephunch/utils/usd/` (e.g., `usd_rigid_entity.py`, `usd_utils.py`, `usd_geometry.py`)
 - **Forbidden:** Changes to simulator code, entity definitions, or any code outside the USD parser directory
-- **Rationale:** The USD parser is an isolated utility that converts USD files to Genesis format without affecting core simulator functionality
+- **Rationale:** The USD parser is an isolated utility that converts USD files to DeepHunch format without affecting core simulator functionality
 
 ### 2. USD Schema Research: Always Check pxr-stubs First
 
@@ -74,8 +74,8 @@ def _get_rigid_transform(prim: Usd.Prim) -> np.ndarray:
 
 ## Key Files Reference
 
-- **Specification:** [UsdParserSpec.md](../../genesis/utils/usd/UsdParserSpec.md)
-- **Main parser:** [usd_rigid_entity.py](../../genesis/utils/usd/usd_rigid_entity.py)
-- **Utilities:** [usd_utils.py](../../genesis/utils/usd/usd_utils.py)
-- **Geometry parsing:** [usd_geometry.py](../../genesis/utils/usd/usd_geometry.py)
-- **Context management:** [usd_context.py](../../genesis/utils/usd/usd_context.py)
+- **Specification:** [UsdParserSpec.md](../../deephunch/utils/usd/UsdParserSpec.md)
+- **Main parser:** [usd_rigid_entity.py](../../deephunch/utils/usd/usd_rigid_entity.py)
+- **Utilities:** [usd_utils.py](../../deephunch/utils/usd/usd_utils.py)
+- **Geometry parsing:** [usd_geometry.py](../../deephunch/utils/usd/usd_geometry.py)
+- **Context management:** [usd_context.py](../../deephunch/utils/usd/usd_context.py)

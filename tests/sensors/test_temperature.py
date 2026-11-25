@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-import genesis as gs
-from genesis.engine.render_context import DynamicMesh
+import deephunch as gs
+from deephunch.engine.render_context import DynamicMesh
 
 from ..utils.assertions import assert_allclose, assert_equal
 
@@ -73,7 +73,7 @@ def test_grid_sensor_contact_and_reset(show_viewer, tol, n_envs):
             },
         )
     )
-    with pytest.raises(gs.GenesisException, match="requires entity_idx >= 0"):
+    with pytest.raises(gs.DeepHunchException, match="requires entity_idx >= 0"):
         scene.add_sensor(gs.sensors.TemperatureGrid())
     scene.build(n_envs=n_envs)
 

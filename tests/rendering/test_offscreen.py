@@ -7,13 +7,13 @@ import torch
 
 import av
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.options.sensors import RasterizerCameraOptions
-from genesis.utils import set_random_seed
-from genesis.utils.image_exporter import FrameImageExporter, as_grayscale_image
-from genesis.utils.misc import tensor_to_array
-from genesis.utils.video_encoder import VideoEncoder
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.options.sensors import RasterizerCameraOptions
+from deephunch.utils import set_random_seed
+from deephunch.utils.image_exporter import FrameImageExporter, as_grayscale_image
+from deephunch.utils.misc import tensor_to_array
+from deephunch.utils.video_encoder import VideoEncoder
 
 from ..conftest import IS_INTERACTIVE_VIEWER_AVAILABLE, SKIP_NO_VIEWER
 from ..utils.assertions import assert_allclose, assert_equal, assert_pixel_match, rgb_array_to_png_bytes
@@ -1195,7 +1195,7 @@ def test_segmentation_map(segmentation_level, is_debug, renderer_type, renderer,
                     )
         seg_keys = set(idx_dict.values()) - {-1}
         assert rigid_keys <= seg_keys
-        with pytest.raises(gs.GenesisException, match="debug representations"):
+        with pytest.raises(gs.DeepHunchException, match="debug representations"):
             scene.rigid_solver.render_context.get_shapes(debug_vis_mode="tet")
         assert sorted(key if isinstance(key, int) else key[0] for key in seg_keys - rigid_keys) == [
             entity.idx for entity in scene.entities if not isinstance(entity.material, gs.materials.Kinematic)
@@ -1878,7 +1878,7 @@ def test_rasterizer_env_separate(renderer, png_snapshot, show_viewer, force_show
     buffers_bound = cam_bound.render(rgb=True, depth=True, segmentation=True, normal=True)
     for buffer_bound, buffer_env in zip(buffers_bound, buffers_env):
         assert_equal(buffer_bound, buffer_env[1])
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         cam.set_pose(pos=(0.0, 0.0, 4.0), envs_idx=0)
 
     # Restore original camera pose for snapshot comparisons
@@ -2095,17 +2095,17 @@ def test_video_recording_lifecycle(tmp_path, monkeypatch, renderer, show_viewer)
         frames_encoded.append(frame.copy())
         write(self, frame)
 
-    monkeypatch.setattr("genesis.utils.video_encoder.VideoEncoder.write", write_intercepted)
+    monkeypatch.setattr("deephunch.utils.video_encoder.VideoEncoder.write", write_intercepted)
 
-    with pytest.raises(gs.GenesisException, match="Recording not started"):
+    with pytest.raises(gs.DeepHunchException, match="Recording not started"):
         cam.stop_recording()
-    with pytest.raises(gs.GenesisException, match="Recording not started"):
+    with pytest.raises(gs.DeepHunchException, match="Recording not started"):
         cam.pause_recording()
 
     # One frame every 1 / FPS of simulated time, whether or not 'render' is ever called by the user
     video_path = tmp_path / "paused.mp4"
     cam.start_recording(save_to_filename=video_path, fps=FPS)
-    with pytest.raises(gs.GenesisException, match="Recording already started"):
+    with pytest.raises(gs.DeepHunchException, match="Recording already started"):
         cam.start_recording()
     for _ in range(N_STEPS):
         scene.step()
@@ -2113,7 +2113,7 @@ def test_video_recording_lifecycle(tmp_path, monkeypatch, renderer, show_viewer)
 
     # A paused span leaves the video untouched, and starting again carries on with the very same file
     cam.pause_recording()
-    with pytest.raises(gs.GenesisException, match="cannot change"):
+    with pytest.raises(gs.DeepHunchException, match="cannot change"):
         cam.start_recording(fps=2.0 * FPS)
     for _ in range(N_STEPS):
         scene.step()

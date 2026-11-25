@@ -15,8 +15,8 @@ import pytest
 
 import quadrants as qd
 
-import genesis as gs
-from genesis.utils.data import ArrayItem, V
+import deephunch as gs
+from deephunch.utils.data import ArrayItem, V
 
 RET_SUCCESS = 42
 RET_SKIP = 43
@@ -26,7 +26,7 @@ MODULE_ROOT_DIR = FILE_PATH.parents[2]
 MODULE = ".".join((FILE_PATH.parents[1].name, FILE_PATH.parent.name, FILE_PATH.stem))
 
 
-@pytest.mark.parametrize("backend", [None])  # Disable genesis initialization at worker level
+@pytest.mark.parametrize("backend", [None])  # Disable deephunch initialization at worker level
 @pytest.mark.parametrize(
     "order",
     [
@@ -97,14 +97,14 @@ def test_switching(backend, order):
             else:
                 os.environ["GS_ENABLE_NDARRAY"] = old_val
 
-        # Destroying Genesis releases the data of its scenes, which a process running scenes in turn relies on
+        # Destroying DeepHunch releases the data of its scenes, which a process running scenes in turn relies on
         gc.collect()
         data_names = [name for name, ref in data_refs.items() if ref() is not None]
-        assert not data_names, f"Cycle {cycle_idx}: the data of the scene outlives Genesis: {data_names}"
+        assert not data_names, f"Cycle {cycle_idx}: the data of the scene outlives DeepHunch: {data_names}"
 
 
 def _basic_sim_child(args: list[str]):
-    """Child process: init genesis, build a scene, step, destroy."""
+    """Child process: init deephunch, build a scene, step, destroy."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", type=str, choices=["cpu", "gpu"], default="cpu")
     args = parser.parse_args(args)
@@ -112,7 +112,7 @@ def _basic_sim_child(args: list[str]):
     backend = getattr(gs.constants.backend, args.backend)
     try:
         gs.utils.get_device(backend)
-    except gs.GenesisException:
+    except gs.DeepHunchException:
         print(f"Backend '{backend}' not available on this machine", file=sys.stderr)
         sys.exit(RET_SKIP)
 

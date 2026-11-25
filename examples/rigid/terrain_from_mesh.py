@@ -1,9 +1,9 @@
 import argparse
 import os
 
-import genesis as gs
+import deephunch as gs
 import numpy as np
-from genesis.utils.terrain import mesh_to_heightfield
+from deephunch.utils.terrain import mesh_to_heightfield
 
 
 def main():

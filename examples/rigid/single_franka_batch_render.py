@@ -1,9 +1,9 @@
 import argparse
 import numpy as np
 
-import genesis as gs
-from genesis.utils.geom import trans_to_T
-from genesis.utils.image_exporter import FrameImageExporter
+import deephunch as gs
+from deephunch.utils.geom import trans_to_T
+from deephunch.utils.image_exporter import FrameImageExporter
 
 
 def main():

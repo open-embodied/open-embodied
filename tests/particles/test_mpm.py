@@ -3,7 +3,7 @@ import pytest
 import torch
 import trimesh
 
-import genesis as gs
+import deephunch as gs
 
 from ..utils.assertions import assert_allclose, assert_equal
 
@@ -283,7 +283,7 @@ def test_halt_on_nan(show_viewer):
 
     # The error raises at the beginning of the next step on CPU, and at worst of the one after it on GPU
     with pytest.raises(
-        gs.GenesisException, match=r"(?s)Invalid MPM particle velocities.* Failing environments: \[1\]\.$"
+        gs.DeepHunchException, match=r"(?s)Invalid MPM particle velocities.* Failing environments: \[1\]\.$"
     ):
         for _ in range(1 if gs.backend == gs.cpu else 2):
             scene.step()

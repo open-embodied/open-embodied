@@ -4,8 +4,8 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-import genesis as gs
-from genesis.utils.misc import tensor_to_array
+import deephunch as gs
+from deephunch.utils.misc import tensor_to_array
 
 
 def main():
@@ -48,7 +48,7 @@ def main():
         ),
     )
 
-    # Rigid bodies (added to both Genesis rigid solver AND IPC as ABD objects)
+    # Rigid bodies (added to both DeepHunch rigid solver AND IPC as ABD objects)
     # This enables contact between rigid bodies and FEM bodies through IPC
     rigid_cube = scene.add_entity(
         morph=gs.morphs.Box(

@@ -5,9 +5,9 @@ import numpy as np
 import pytest
 import trimesh
 
-import genesis as gs
-from genesis.engine.render_context import DynamicMesh
-from genesis.utils.misc import tensor_to_array
+import deephunch as gs
+from deephunch.engine.render_context import DynamicMesh
+from deephunch.utils.misc import tensor_to_array
 
 from ..conftest import IS_INTERACTIVE_VIEWER_AVAILABLE, SKIP_NO_VIEWER
 from ..utils.assertions import assert_allclose, assert_equal, rgb_array_to_png_bytes
@@ -402,13 +402,13 @@ def test_set_vverts(renderer, show_viewer):
         envs_other = np.setdiff1d(np.arange(scene.n_envs), envs_held)
         assert_allclose(vverts[envs_other], vverts_before[envs_other], tol=gs.EPS)
 
-    with pytest.raises(gs.GenesisException, match="DynamicVertices"):
+    with pytest.raises(gs.DeepHunchException, match="DynamicVertices"):
         plane.set_vverts(None)
-    with pytest.raises(gs.GenesisException, match="single visual geom"):
+    with pytest.raises(gs.DeepHunchException, match="single visual geom"):
         arm.set_vverts(None)
-    with pytest.raises(gs.GenesisException, match="No variant is named"):
+    with pytest.raises(gs.DeepHunchException, match="No variant is named"):
         entity.set_vverts(variant="cube")
-    with pytest.raises(gs.GenesisException, match="not both"):
+    with pytest.raises(gs.DeepHunchException, match="not both"):
         entity.set_vverts(squashed_verts, variant="squashed")
 
 
@@ -533,5 +533,5 @@ def test_set_vverts_sphere_to_box(renderer, show_viewer):
     assert int((mask_deformable_restored ^ mask_sphere).sum()) < sphere_tolerance
 
     # Writing vertices takes the batched variant, which these DynamicVertices leave out
-    with pytest.raises(gs.GenesisException, match="is_batched=True"):
+    with pytest.raises(gs.DeepHunchException, match="is_batched=True"):
         deformable.set_vverts(cube_verts)

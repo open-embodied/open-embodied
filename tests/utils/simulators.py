@@ -4,9 +4,9 @@ from dataclasses import dataclass
 import mujoco
 import numpy as np
 
-import genesis as gs
-from genesis.utils import mjcf as mju
-from genesis.utils.mesh import get_assets_dir
+import deephunch as gs
+from deephunch.utils import mjcf as mju
+from deephunch.utils.mesh import get_assets_dir
 
 from .assets import get_hf_dataset
 from .mujoco_parity import align_mujoco_invweight0
@@ -56,25 +56,25 @@ def build_mujoco_sim(
     else:
         model.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
     model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_ISLAND
-    # A dense constraint jacobian, whatever the dof count, so its rows compare column by column with Genesis's (see
+    # A dense constraint jacobian, whatever the dof count, so its rows compare column by column with DeepHunch's (see
     # _pair_constraint_rows in mujoco_parity.py)
     model.opt.jacobian = mujoco.mjtJacobian.mjJAC_DENSE
-    # FIXME: Genesis gives every contact at least the sliding-friction basis, so a geom asking for a frictionless
+    # FIXME: DeepHunch gives every contact at least the sliding-friction basis, so a geom asking for a frictionless
     # contact through 'condim' is not honoured. Raising those to 3 keeps the constraint sets comparable, since MuJoCo
-    # would otherwise emit a single normal row where Genesis emits the whole basis. Geoms asking for torsional or
-    # rolling friction keep their own value, which Genesis follows through its friction options.
+    # would otherwise emit a single normal row where DeepHunch emits the whole basis. Geoms asking for torsional or
+    # rolling friction keep their own value, which DeepHunch follows through its friction options.
     model.geom_condim[model.geom_condim < 3] = 3
-    # FIXME: Genesis has no tendons, so a tendon's range contributes no constraint row on its side. Releasing the range
+    # FIXME: DeepHunch has no tendons, so a tendon's range contributes no constraint row on its side. Releasing the range
     # keeps the constraint sets comparable; a model whose behaviour depends on that range cannot be compared until
     # tendons are supported.
     model.tendon_limited[:] = 0
     model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_EULERDAMP)
     model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_REFSAFE)
     model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_GRAVITY)
-    # Keep midpoint integration of standalone free bodies enabled on the MuJoCo side: Genesis implements it under
+    # Keep midpoint integration of standalone free bodies enabled on the MuJoCo side: DeepHunch implements it under
     # the implicitfast integrator, and the consistency tests are its test coverage.
     model.opt.enableflags &= ~np.uint32(mujoco.mjtEnableBit.mjENBL_INVDISCRETE)
-    # MuJoCo's mesh processing leaves sub-epsilon center-of-mass residuals in body_ipos while Genesis re-centers
+    # MuJoCo's mesh processing leaves sub-epsilon center-of-mass residuals in body_ipos while DeepHunch re-centers
     # meshes exactly. Midpoint integration branches on an exact ipos == 0 test, so the residuals would silently
     # route the two engines through different update rules; canonicalize the dust to zero.
     model.body_ipos[np.abs(model.body_ipos) < 1e-12] = 0.0
@@ -96,7 +96,7 @@ def build_mujoco_sim(
     return MjSim(model, data)
 
 
-def build_genesis_sim(
+def build_deephunch_sim(
     xml_paths,
     gs_solver,
     gs_integrator,
@@ -189,7 +189,7 @@ def build_genesis_sim(
 
     scene.build()
 
-    # Genesis solves per island (see linesearch.py) and MuJoCo does when its islands are enabled
+    # DeepHunch solves per island (see linesearch.py) and MuJoCo does when its islands are enabled
     mj_sim.model.opt.disableflags &= ~np.uint32(mujoco.mjtDisableBit.mjDSBL_ISLAND)
 
     return scene.sim

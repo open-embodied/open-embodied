@@ -3,10 +3,10 @@ from typing import TYPE_CHECKING
 import torch
 import numpy as np
 
-from genesis.utils.geom import quat_to_xyz
+from deephunch.utils.geom import quat_to_xyz
 
 if TYPE_CHECKING:
-    from genesis.engine.entities import DroneEntity
+    from deephunch.engine.entities import DroneEntity
 
 
 class PIDController:

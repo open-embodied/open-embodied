@@ -5,9 +5,9 @@ import pytest
 import torch
 import trimesh
 
-import genesis as gs
-from genesis.engine.scene import SCENE_FORMAT
-from genesis.utils import serialization
+import deephunch as gs
+from deephunch.engine.scene import SCENE_FORMAT
+from deephunch.utils import serialization
 
 from ..utils.assertions import assert_allclose
 
@@ -205,7 +205,7 @@ def test_entity_spec(tmp_path, show_viewer, tol, two_box_free_mjcf, sphere_free_
     fixed_box = scene.add_entity(spec=fixed_box_spec)
     fixed_box.attach(box, box.base_link.name, pos=(0.0, 0.0, 0.2))
     box_spec.select(gs.indices.Geom.at(0)).set_friction(3.0)
-    with pytest.raises(gs.GenesisException, match="records no more patches"):
+    with pytest.raises(gs.DeepHunchException, match="records no more patches"):
         box.spec.select(gs.indices.Geom.at(0)).set_friction(3.0)
 
     exported = tmp_path / f"selections{SCENE_FORMAT}"
@@ -250,71 +250,71 @@ def test_entity_spec(tmp_path, show_viewer, tol, two_box_free_mjcf, sphere_free_
     assert loaded["rigid"].model_dump() == rigid_spec.model_dump()
     assert loaded["fem"].model_dump() == fem_spec.model_dump()
 
-    with pytest.raises(gs.GenesisException, match="gs.entities.FEM"):
+    with pytest.raises(gs.DeepHunchException, match="gs.entities.FEM"):
         gs.entities.MPM(morph=gs.morphs.Sphere(), material=gs.materials.FEM.Elastic())
-    with pytest.raises(gs.GenesisException, match="gs.entities.Rigid"):
+    with pytest.raises(gs.DeepHunchException, match="gs.entities.Rigid"):
         gs.entities.Kinematic(morph=gs.morphs.Sphere(), material=gs.materials.Rigid())
 
     # A subclass a user declares admits the materials of its base, which the shorthand keeps giving to the base
     class UserRigid(gs.entities.Rigid):
         pass
 
-    with pytest.raises(gs.GenesisException, match="gs.entities.Kinematic"):
+    with pytest.raises(gs.DeepHunchException, match="gs.entities.Kinematic"):
         UserRigid(morph=gs.morphs.Sphere(), material=gs.materials.Kinematic())
     assert type(gs.Scene().add_entity(gs.morphs.Sphere()).spec) is gs.entities.Rigid
-    with pytest.raises(gs.GenesisException, match="either an entity spec"):
+    with pytest.raises(gs.DeepHunchException, match="either an entity spec"):
         scene.add_entity(morph=gs.morphs.Sphere(), spec=gs.entities.Rigid(morph=gs.morphs.Sphere()))
-    with pytest.raises(gs.GenesisException, match="got gs.indices.Vertex"):
+    with pytest.raises(gs.DeepHunchException, match="got gs.indices.Vertex"):
         gs.entities.Rigid(morph=gs.morphs.Box(size=(0.1, 0.1, 0.1))).select(gs.indices.Vertex.at(0)).set_friction(1.0)
-    with pytest.raises(gs.GenesisException, match="got gs.indices.Link"):
+    with pytest.raises(gs.DeepHunchException, match="got gs.indices.Link"):
         box_spec.select(gs.indices.Geom.at(0)).select(gs.indices.Link.named("box_baselink"))
-    with pytest.raises(gs.GenesisException, match="on parts selected with gs.indices.VGeom"):
+    with pytest.raises(gs.DeepHunchException, match="on parts selected with gs.indices.VGeom"):
         box_spec.select(gs.indices.VGeom.at(0)).set(gs.options.Geom(friction=1.0))
-    with pytest.raises(gs.GenesisException, match="sets no gs.options.Geom"):
+    with pytest.raises(gs.DeepHunchException, match="sets no gs.options.Geom"):
         dense_body_ghost.spec.model_copy().select(gs.indices.Link.named("body")).set_friction(1.0)
     # A copy records again, deep or not
     box.spec.model_copy(deep=True).select(gs.indices.Geom.at(0)).set_friction(3.0)
-    with pytest.raises(gs.GenesisException, match="at least 1"):
+    with pytest.raises(gs.DeepHunchException, match="at least 1"):
         gs.entities.Rigid(morph=())
-    with pytest.raises(gs.GenesisException, match="sets no field"):
+    with pytest.raises(gs.DeepHunchException, match="sets no field"):
         box_spec.select(gs.indices.Geom.at(0)).set(gs.options.Geom())
     out_of_range_spec = box_spec.model_copy()
     out_of_range_spec.select(gs.indices.Link.named("box_baselink")).select(gs.indices.Geom.at(1)).set_friction(1.0)
-    with pytest.raises(gs.GenesisException, match="selects no valid geom among 1"):
+    with pytest.raises(gs.DeepHunchException, match="selects no valid geom among 1"):
         scene.add_entity(spec=out_of_range_spec)
     disjoint_spec = arm.spec.model_copy()
     disjoint_spec.select(gs.indices.Link.named("arm1") & gs.indices.Link.named("arm2")).set_friction(1.0)
-    with pytest.raises(gs.GenesisException, match="holds no collision geom"):
+    with pytest.raises(gs.DeepHunchException, match="holds no collision geom"):
         scene.add_entity(spec=disjoint_spec)
     unknown_link_spec = arm.spec.model_copy()
     unknown_link_spec.select(gs.indices.Link.named("arm3")).set_friction(1.0)
-    with pytest.raises(gs.GenesisException, match="links_to_keep"):
+    with pytest.raises(gs.DeepHunchException, match="links_to_keep"):
         scene.add_entity(spec=unknown_link_spec)
     out_of_range_vgeom_spec = arm.spec.model_copy()
     out_of_range_vgeom_spec.select(gs.indices.VGeom.at(2)).set_surface(gs.surfaces.Default())
-    with pytest.raises(gs.GenesisException, match="selects no valid geom among 2"):
+    with pytest.raises(gs.DeepHunchException, match="selects no valid geom among 2"):
         scene.add_entity(spec=out_of_range_vgeom_spec)
     rootless_spec = arm.spec.model_copy()
     rootless_spec.select(gs.indices.Link.named("base")).select(gs.indices.Geom.at(0)).set_friction(1.0)
-    with pytest.raises(gs.GenesisException, match="holds no collision geom"):
+    with pytest.raises(gs.DeepHunchException, match="holds no collision geom"):
         scene.add_entity(spec=rootless_spec)
     # Every heterogeneous variant holds what the entity selects
     variants_spec = gs.entities.Rigid(
         morph=(gs.morphs.MJCF(file=two_box_free_mjcf), gs.morphs.MJCF(file=sphere_free_mjcf))
     )
     variants_spec.select(gs.indices.Geom.at(1)).set_friction(1.0)
-    with pytest.raises(gs.GenesisException, match="selects no valid geom among 1"):
+    with pytest.raises(gs.DeepHunchException, match="selects no valid geom among 1"):
         scene.add_entity(spec=variants_spec)
     # Only rigid entities draw contacts, which every kind may decline
     gs.Scene().add_entity(gs.morphs.Sphere(), material=gs.materials.Kinematic(), visualize_contact=False)
-    with pytest.raises(gs.GenesisException, match="only applies to rigid entities"):
+    with pytest.raises(gs.DeepHunchException, match="only applies to rigid entities"):
         gs.Scene().add_entity(gs.morphs.Sphere(), material=gs.materials.FEM.Elastic(), visualize_contact=True)
 
-    with pytest.raises(gs.GenesisException, match="in the debug view as one of"):
+    with pytest.raises(gs.DeepHunchException, match="in the debug view as one of"):
         gs.entities.SPH(morph=gs.morphs.Sphere(), vis=gs.options.EntityVisOptions(debug_vis_mode="collision"))
     # Only the user places the vertices of a rigid or kinematic entity, a solver placing the others
     fem_vertices_spec = gs.entities.FEM(morph=gs.morphs.Sphere(), material=gs.materials.FEM.Elastic())
-    with pytest.raises(gs.GenesisException, match="cannot show DynamicVertices"):
+    with pytest.raises(gs.DeepHunchException, match="cannot show DynamicVertices"):
         fem_vertices_spec.select(gs.indices.VGeom.at(0)).set(
             gs.options.VGeom(dynamic_vertices=gs.surfaces.DynamicVertices())
         )

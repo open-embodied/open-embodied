@@ -12,7 +12,7 @@ with lazy_imports():
     import numpy as np
     import trimesh
 
-    import genesis as gs
+    import deephunch as gs
 
 
 class RENDERER_TYPE(enum.IntEnum):
@@ -71,7 +71,7 @@ def skip_if_not_installed(renderer_type):
         if find_spec("gs_madrona") is None:
             pytest.skip(SKIP_NO_MADRONA)
     if renderer_type == RENDERER_TYPE.RAYTRACER:
-        # LuisaRenderPy is found through the path that genesis appends as it is imported, which the test module has done
+        # LuisaRenderPy is found through the path that deephunch appends as it is imported, which the test module has done
         if find_spec("LuisaRenderPy") is None:
             pytest.skip(SKIP_NO_LUISA)
 

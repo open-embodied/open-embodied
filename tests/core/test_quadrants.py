@@ -10,11 +10,11 @@ import pytest
 
 import quadrants as qd
 
-import genesis as gs
-from genesis.engine.solvers.rigid.collider.collider import kernel_detection
-from genesis.engine.solvers.rigid.constraint.solver import linear_to_lower_tri
-from genesis.engine.solvers.rigid.rigid_solver import kernel_substep_dynamics
-from genesis.utils.misc import qd_to_numpy, qd_to_torch
+import deephunch as gs
+from deephunch.engine.solvers.rigid.collider.collider import kernel_detection
+from deephunch.engine.solvers.rigid.constraint.solver import linear_to_lower_tri
+from deephunch.engine.solvers.rigid.rigid_solver import kernel_substep_dynamics
+from deephunch.utils.misc import qd_to_numpy, qd_to_torch
 
 from ..utils.assertions import assert_allclose
 
@@ -27,14 +27,14 @@ MODULE_ROOT_DIR = FILE_PATH.parents[2]
 MODULE = ".".join((FILE_PATH.parents[1].name, FILE_PATH.parent.name, FILE_PATH.stem))
 
 
-def _initialize_genesis(backend: gs.constants.backend | str):
+def _initialize_deephunch(backend: gs.constants.backend | str):
     if isinstance(backend, str):
         backend = getattr(gs.constants.backend, backend)
 
     # Skip if requested backend is not available
     try:
         gs.utils.get_device(backend)
-    except gs.GenesisException:
+    except gs.DeepHunchException:
         print(f"Backend '{backend}' not available on this machine", file=sys.stderr)
         sys.exit(RET_SKIP)
 
@@ -92,7 +92,7 @@ def gs_static_child(args: list[str]):
     parser.add_argument("--expected-src-ll-cache-hit", type=int, required=True)
     args = parser.parse_args(args)
 
-    _initialize_genesis(backend=args.backend)
+    _initialize_deephunch(backend=args.backend)
 
     scene = gs.Scene(
         rigid_options=gs.options.RigidOptions(
@@ -124,7 +124,7 @@ def gs_static_child(args: list[str]):
     sys.exit(RET_SUCCESS)
 
 
-@pytest.mark.parametrize("backend", [None])  # Disable genesis initialization at worker level
+@pytest.mark.parametrize("backend", [None])  # Disable deephunch initialization at worker level
 @pytest.mark.parametrize(
     "enable_multicontact, expected_num_contacts, use_ndarray, test_backend",
     [
@@ -188,7 +188,7 @@ def gs_num_envs_child(args: list[str]):
     parser.add_argument("--expected-fe-ll-cache-hit", action="store_true")
     args = parser.parse_args(args)
 
-    _initialize_genesis(backend=args.backend)
+    _initialize_deephunch(backend=args.backend)
 
     scene = gs.Scene(show_viewer=False)
     scene.add_entity(
@@ -220,7 +220,7 @@ def gs_num_envs_child(args: list[str]):
 
 
 @pytest.mark.required
-@pytest.mark.parametrize("backend", [None])  # Disable genesis initialization at worker level
+@pytest.mark.parametrize("backend", [None])  # Disable deephunch initialization at worker level
 @pytest.mark.parametrize("test_backend", ["cpu", "gpu"])
 @pytest.mark.parametrize("use_ndarray", [False, True])
 def test_num_envs(use_ndarray: bool, test_backend: str, tmp_path: pathlib.Path) -> None:
@@ -271,7 +271,7 @@ def change_scene(args: list[str]):
     parser.add_argument("--expected-src-ll-cache-hit", type=int, required=True)
     args = parser.parse_args(args)
 
-    _initialize_genesis(backend=args.backend)
+    _initialize_deephunch(backend=args.backend)
 
     kernel_primal = kernel_substep_dynamics._primal
     for i_build in range(2):
@@ -327,7 +327,7 @@ def change_scene(args: list[str]):
 
 @pytest.mark.slow  # ~200s
 @pytest.mark.required
-@pytest.mark.parametrize("backend", [None])  # Disable genesis initialization at worker level
+@pytest.mark.parametrize("backend", [None])  # Disable deephunch initialization at worker level
 @pytest.mark.parametrize(
     "test_backend, list_n_objs_n_envs",
     [

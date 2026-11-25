@@ -9,11 +9,11 @@ import pytest
 import torch
 import trimesh
 
-import genesis as gs
-import genesis.utils.geom as gu
-import genesis.utils.point_cloud as pc
-from genesis.utils.cache import disable_owned_cache_release, enable_owned_cache_release
-from genesis.utils.misc import assign_indexed_tensor, broadcast_tensor, indices_to_mask, sanitize_index, tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+import deephunch.utils.point_cloud as pc
+from deephunch.utils.cache import disable_owned_cache_release, enable_owned_cache_release
+from deephunch.utils.misc import assign_indexed_tensor, broadcast_tensor, indices_to_mask, sanitize_index, tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 
@@ -84,7 +84,7 @@ def test_rebuild_keeps_cached_data():
 @pytest.mark.required
 @pytest.mark.parametrize("raise_before_build", [True, False])
 def test_destroy_after_aborted_camera_build(monkeypatch, raise_before_build):
-    from genesis.engine.sensors.camera import RasterizerCameraSensor
+    from deephunch.engine.sensors.camera import RasterizerCameraSensor
 
     scene = gs.Scene(show_viewer=False)
     camera = scene.add_sensor(
@@ -334,7 +334,7 @@ def test_sanitize_index(index, expected):
     ),
 )
 def test_sanitize_index_rejects_invalid_collections(index):
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         sanitize_index(index, -1, 4, 0, "index")
 
 
@@ -432,7 +432,7 @@ def test_fps_algorithm_core():
     out_anchor = pc.furthest_point_sample(anchor, 3, seed=None)
     assert_allclose(out_anchor[0], anchor[0], tol=1e-5)
 
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         pc.furthest_point_sample(np.zeros((5, 3)), 10, seed=None)
 
 
@@ -502,7 +502,7 @@ def test_gs_mesh_sample_point_cloud_wrapper():
 @pytest.mark.required
 def test_solver_state_change_trackers(show_viewer):
     # Imported lazily: the solver package pulls in quadrants kernels that need gs.qd_float, set only by gs.init.
-    from genesis.engine.state_change import StateChange, Subscriber
+    from deephunch.engine.state_change import StateChange, Subscriber
 
     scene = gs.Scene(
         viewer_options=gs.options.ViewerOptions(
@@ -809,7 +809,7 @@ def test_derived_substeps(show_viewer, tol):
     assert_allclose(velocity.grad, (0.0, 0.0, 0.01), tol=tol)
 
     # Two solvers asking for intervals that imply different counts have no one rate to advance at, and are rejected.
-    with pytest.raises(gs.GenesisException, match="Solvers integrating at different rates"):
+    with pytest.raises(gs.DeepHunchException, match="Solvers integrating at different rates"):
         scene = gs.Scene(
             sim_options=gs.options.SimOptions(dt=0.01),
             rigid_options=gs.options.RigidOptions(dt=0.005),
@@ -839,7 +839,7 @@ def test_derived_substeps(show_viewer, tol):
     assert_equal(scene_inactive.get_error_envs_mask(), False)
 
     for interval in (0.003, 0.02):
-        with pytest.raises(gs.GenesisException, match="does not divide the step dt"):
+        with pytest.raises(gs.DeepHunchException, match="does not divide the step dt"):
             scene = gs.Scene(
                 sim_options=gs.options.SimOptions(dt=0.01),
                 rigid_options=gs.options.RigidOptions(dt=interval),
@@ -848,7 +848,7 @@ def test_derived_substeps(show_viewer, tol):
             scene.add_entity(gs.morphs.Sphere(pos=(0.0, 0.0, 1.0)))
             scene.build()
 
-    with pytest.raises(gs.GenesisException, match="conflicting with the requested substeps"):
+    with pytest.raises(gs.DeepHunchException, match="conflicting with the requested substeps"):
         scene = gs.Scene(
             sim_options=gs.options.SimOptions(dt=0.01, substeps=4),
             rigid_options=gs.options.RigidOptions(dt=0.002),

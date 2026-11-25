@@ -4,7 +4,7 @@ This repo shows how to use IPC coupler. (Incremental Potential Contact) algorith
 
 **Prerequisites:**
 1. Install LibUIPC optional dependency: `pip install pyuipc`
-2. Ensure Genesis is in development mode: `pip install -e .`
+2. Ensure DeepHunch is in development mode: `pip install -e .`
 
 Beware only Linux/Windows x86 CPU & Nvidia GPU is supported for now.
 
@@ -32,4 +32,4 @@ Beware only Linux/Windows x86 CPU & Nvidia GPU is supported for now.
 **Verification:**
 - No interpenetration between objects during contact
 - Cloth renders correctly (visible mesh with proper shading)
-- Two-way coupling: Genesis rigid body motion affects IPC objects and vice versa
+- Two-way coupling: DeepHunch rigid body motion affects IPC objects and vice versa

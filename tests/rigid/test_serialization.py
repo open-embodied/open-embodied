@@ -13,12 +13,12 @@ import torch
 
 import trimesh
 
-import genesis as gs
-from genesis.engine.scene import SCENE_FORMAT, description_digest
-from genesis.ext import urdfpy
-from genesis.recorders.trajectory import CHUNK_MAGIC, TRAJECTORY_FORMAT, Trajectory
-from genesis.utils.misc import get_assets_dir
-from genesis.utils.serialization import ARRAY_MEMBER, MANIFEST_NAME
+import deephunch as gs
+from deephunch.engine.scene import SCENE_FORMAT, description_digest
+from deephunch.ext import urdfpy
+from deephunch.recorders.trajectory import CHUNK_MAGIC, TRAJECTORY_FORMAT, Trajectory
+from deephunch.utils.misc import get_assets_dir
+from deephunch.utils.serialization import ARRAY_MEMBER, MANIFEST_NAME
 
 from ..utils.assertions import assert_allclose, assert_equal
 
@@ -348,7 +348,7 @@ def test_export_and_load_rigid(
     assert str(get_assets_dir()) not in stored
     assert '"free_boxes_and_slider.xml"' in stored
     # An entity's creation uses the description its build resolved, and that description carries the geometry.
-    # Genesis therefore reads the asset file once and never again.
+    # DeepHunch therefore reads the asset file once and never again.
     Path(xml_path).unlink()
 
     restored = gs.Scene.load(exported)
@@ -552,7 +552,7 @@ def test_load_rejects_damaged_file(checkpoint_scene, tmp_path):
     exported = tmp_path / f"authored{SCENE_FORMAT}"
     checkpoint_scene.export(exported)
 
-    # A file records what the classes its values load against are made of. A field it holds that Genesis no longer
+    # A file records what the classes its values load against are made of. A field it holds that DeepHunch no longer
     # declares means its values say something else, so the file is rejected by the name of what moved.
     with zipfile.ZipFile(exported) as archive:
         members = {name: archive.read(name) for name in archive.namelist()}
@@ -563,7 +563,7 @@ def test_load_rejects_damaged_file(checkpoint_scene, tmp_path):
     with zipfile.ZipFile(exported, "w") as archive:
         for name, content in members.items():
             archive.writestr(name, content)
-    with pytest.raises(gs.GenesisException, match="inertial_frame.*RigidLinkDescription"):
+    with pytest.raises(gs.DeepHunchException, match="inertial_frame.*RigidLinkDescription"):
         gs.Scene.load(exported)
 
     # An enumeration member whose value moved means every value written under it names something else.
@@ -573,7 +573,7 @@ def test_load_rejects_damaged_file(checkpoint_scene, tmp_path):
     with zipfile.ZipFile(exported, "w") as archive:
         for name, content in members.items():
             archive.writestr(name, content)
-    with pytest.raises(gs.GenesisException, match="REVOLUTE=7"):
+    with pytest.raises(gs.DeepHunchException, match="REVOLUTE=7"):
         gs.Scene.load(exported)
 
     # A field a class gained since is not a mismatch: an option states which of its fields were given, and a
@@ -594,7 +594,7 @@ def test_load_rejects_damaged_file(checkpoint_scene, tmp_path):
     with zipfile.ZipFile(exported, "w") as archive:
         for name, content in members.items():
             archive.writestr(name, content)
-    with pytest.raises(gs.GenesisException, match="not the manifest Genesis writes"):
+    with pytest.raises(gs.DeepHunchException, match="not the manifest DeepHunch writes"):
         gs.Scene.load(exported)
 
     # A value shaped like a container is rejected where a field states one number.
@@ -604,7 +604,7 @@ def test_load_rejects_damaged_file(checkpoint_scene, tmp_path):
     with zipfile.ZipFile(exported, "w") as archive:
         for name, content in members.items():
             archive.writestr(name, content)
-    with pytest.raises(gs.GenesisException, match="holds a list where"):
+    with pytest.raises(gs.DeepHunchException, match="holds a list where"):
         gs.Scene.load(exported)
 
     # A file arrives from wherever it was written, so a value contradicting its declaration is rejected rather than
@@ -615,7 +615,7 @@ def test_load_rejects_damaged_file(checkpoint_scene, tmp_path):
     with zipfile.ZipFile(exported, "w") as archive:
         for name, content in members.items():
             archive.writestr(name, content)
-    with pytest.raises(gs.GenesisException, match="values a Genesis scene is not made of"):
+    with pytest.raises(gs.DeepHunchException, match="values a DeepHunch scene is not made of"):
         gs.Scene.load(exported)
 
     # A value standing where another kind is declared is rejected as well, and so is one its field does not admit.
@@ -625,7 +625,7 @@ def test_load_rejects_damaged_file(checkpoint_scene, tmp_path):
     with zipfile.ZipFile(exported, "w") as archive:
         for name, content in members.items():
             archive.writestr(name, content)
-    with pytest.raises(gs.GenesisException, match="states a 'dt' that SimOptions rejects"):
+    with pytest.raises(gs.DeepHunchException, match="states a 'dt' that SimOptions rejects"):
         gs.Scene.load(exported)
 
     manifest = deepcopy(original)
@@ -634,7 +634,7 @@ def test_load_rejects_damaged_file(checkpoint_scene, tmp_path):
     with zipfile.ZipFile(exported, "w") as archive:
         for name, content in members.items():
             archive.writestr(name, content)
-    with pytest.raises(gs.GenesisException, match="holds a str where a float was declared"):
+    with pytest.raises(gs.DeepHunchException, match="holds a str where a float was declared"):
         gs.Scene.load(exported)
 
 
@@ -646,7 +646,7 @@ def test_export_rejects_unsupported_physics(checkpoint_scene, tmp_path):
         morph=gs.morphs.Box(pos=(0.5, 0.5, 0.8), size=(0.1, 0.1, 0.1)), material=gs.materials.MPM.Elastic()
     )
     checkpoint_scene.add_force_field(gs.force_fields.Wind(direction=(1.0, 0.0, 0.0)))
-    with pytest.raises(gs.GenesisException, match="1 MPMEntity, 1 Wind cannot be exported"):
+    with pytest.raises(gs.DeepHunchException, match="1 MPMEntity, 1 Wind cannot be exported"):
         checkpoint_scene.export(tmp_path / f"wind{SCENE_FORMAT}")
 
 
@@ -657,7 +657,7 @@ def test_pickle_resume(n_envs, requires_grad, checkpoint_scene, tmp_path, show_v
     ARRAYS_NAMES = ("rigid_info.qpos", "dyn_state.dofs.vel", "dyn_state.fixed_roots.pos")
     scene = checkpoint_scene
     box, arm, ghost = scene.entities[1], scene.entities[2], scene.entities[4]
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         pickle.dumps(scene)
     scene.build(n_envs=n_envs)
     arm.control_dofs_position([0.3, -0.3])
@@ -675,7 +675,7 @@ def test_pickle_resume(n_envs, requires_grad, checkpoint_scene, tmp_path, show_v
     # A record of another scene is rejected on its description, however its arrays compare
     other_desc = dataclasses.replace(checkpoint.scene, entities=checkpoint.scene.entities[:-1])
     other_checkpoint = dataclasses.replace(checkpoint, scene=other_desc, digest=description_digest(other_desc))
-    with pytest.raises(gs.GenesisException, match="another scene"):
+    with pytest.raises(gs.DeepHunchException, match="another scene"):
         scene.__setstate__(other_checkpoint)
     scene_bytes = pickle.dumps(scene)
     checkpoint_path = tmp_path / f"state{TRAJECTORY_FORMAT}"
@@ -747,9 +747,9 @@ def test_pickle_resume(n_envs, requires_grad, checkpoint_scene, tmp_path, show_v
     dropped_name, *_ = rigid.arrays
     arrays = {name: array for name, array in rigid.arrays.items() if name != dropped_name}
     solvers = {**checkpoint.sim.solvers, "RigidSolver": dataclasses.replace(rigid, arrays=arrays)}
-    with pytest.raises(gs.GenesisException, match=f"do not share \\['{dropped_name}'\\]"):
+    with pytest.raises(gs.DeepHunchException, match=f"do not share \\['{dropped_name}'\\]"):
         scene.__setstate__(dataclasses.replace(checkpoint, sim=dataclasses.replace(checkpoint.sim, solvers=solvers)))
-    with pytest.raises(gs.GenesisException, match="built with EnvironmentLayout\\(n_envs=3"):
+    with pytest.raises(gs.DeepHunchException, match="built with EnvironmentLayout\\(n_envs=3"):
         scene.__setstate__(dataclasses.replace(checkpoint, layout=dataclasses.replace(checkpoint.layout, n_envs=3)))
 
 
@@ -834,7 +834,7 @@ def test_trajectory_replay(n_envs, checkpoint_scene, tmp_path, show_viewer, tol)
     scene.reset()
     reset_state = scene.rigid_solver.get_state()
     # Every recorder is stopped, then the failure of the capped one is raised, and it leaves no file behind
-    with pytest.raises(gs.GenesisException, match="cannot hold the header"):
+    with pytest.raises(gs.DeepHunchException, match="cannot hold the header"):
         scene.stop_recording()
     assert not capped_path.exists()
 
@@ -980,12 +980,12 @@ def test_trajectory_replay(n_envs, checkpoint_scene, tmp_path, show_viewer, tol)
     # A file cut off before its first chunk holds no frame, and is rejected as a trajectory
     with open(cut_path, "wb") as file:
         file.write(data[: data.find(CHUNK_MAGIC)])
-    with pytest.raises(gs.GenesisException, match="holds no frame"):
+    with pytest.raises(gs.DeepHunchException, match="holds no frame"):
         Trajectory(cut_path, scene=replay_scene)
     # A file written in another version of the format is rejected by that version
     with open(cut_path, "wb") as file:
         file.write(b"GSTRAJ3\n" + data[len(b"GSTRAJ3\n") :])
-    with pytest.raises(gs.GenesisException, match="version 3 of the trajectory format"):
+    with pytest.raises(gs.DeepHunchException, match="version 3 of the trajectory format"):
         Trajectory(cut_path, scene=replay_scene)
 
 

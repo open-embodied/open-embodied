@@ -10,7 +10,7 @@ Dragon:     contype=4, conaffinity=4 (0100) -> collide with Plane only
 
 import argparse
 
-import genesis as gs
+import deephunch as gs
 
 
 def main():

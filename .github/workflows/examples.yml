@@ -21,7 +21,7 @@ jobs:
       HF_HUB_DOWNLOAD_TIMEOUT: 60
       FORCE_COLOR: 1
       PY_COLORS: 1
-      GS_CACHE_FILE_PATH: ".cache/genesis"
+      GS_CACHE_FILE_PATH: ".cache/deephunch"
       QD_OFFLINE_CACHE: "1"
       QD_OFFLINE_CACHE_CLEANING_POLICY: "never"
       QD_OFFLINE_CACHE_FILE_PATH: ".cache/quadrants"

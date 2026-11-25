@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 import trimesh
 
-import genesis as gs
-from genesis.utils.misc import qd_to_numpy, tensor_to_array
+import deephunch as gs
+from deephunch.utils.misc import qd_to_numpy, tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 
@@ -68,7 +68,7 @@ def test_constraint_capacity_covers_friction_rows(show_viewer):
 def test_partition_logics(show_viewer, n_envs, multi_free_body_path):
     # The welded pair never touches, so only the equality edge couples them: without it the partition would split them
     # and the weld would be solved across two islands. A fixed body carries no dofs and joins no island. The
-    # multi-free-body MJCF entity (offset clear of the boxes) is a single Genesis entity that must split into one island
+    # multi-free-body MJCF entity (offset clear of the boxes) is a single DeepHunch entity that must split into one island
     # per free-body subtree, never one dense block - its hinge child stays in its parent's island via a kinematic edge.
     scene = gs.Scene(
         rigid_options=gs.options.RigidOptions(
@@ -401,8 +401,8 @@ def test_monolith_seed_oversaturated(show_viewer, monkeypatch):
     # (get_gpu_core_count -> 1) disables the cooperative kernels at 2 envs - a small-scale stand-in for the
     # >get_gpu_core_count() env regime. With the monolith arm pinned, the seed factor + gradient come from the monolith
     # body itself (see has_per_env_solve_seed in rigid/data.py). A stale Mgrad drops the boxes through the floor.
-    import genesis.engine.solvers.rigid.rigid_solver as rigid_solver
-    from genesis.engine.solvers.rigid.data import RigidConfig
+    import deephunch.engine.solvers.rigid.rigid_solver as rigid_solver
+    from deephunch.engine.solvers.rigid.data import RigidConfig
 
     monkeypatch.setattr(rigid_solver, "get_gpu_core_count", lambda: 1)
     # The gap is in the monolith arm's init path, so pin the arm (otherwise the autotuner might pick the decomposed

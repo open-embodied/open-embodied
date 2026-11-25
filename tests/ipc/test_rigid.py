@@ -13,9 +13,9 @@ if find_spec("uipc") is None:
 
 from uipc import builtin
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.utils.misc import tensor_to_array, geometric_mean, harmonic_mean
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.utils.misc import tensor_to_array, geometric_mean, harmonic_mean
 
 from ..utils.assertions import assert_allclose
 from ..utils.assets import get_hf_dataset
@@ -27,13 +27,13 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from genesis.engine.couplers import IPCCoupler
+    from deephunch.engine.couplers import IPCCoupler
 
 
 @pytest.mark.required
 @pytest.mark.parametrize("n_envs, n_substeps", [(0, 1), (2, 1), (0, 2), (2, 2)])
 def test_objects_freefall(n_envs, n_substeps, show_viewer):
-    from genesis.engine.entities import FEMEntity
+    from deephunch.engine.entities import FEMEntity
 
     # The interval one advance of the IPC world covers, asked for as the dt the solvers integrate at, so that a step
     # holding several substeps must reach the coupler as the substep rate to integrate the same free fall.
@@ -332,7 +332,7 @@ def test_ground_sliding(n_envs, show_viewer):
 @pytest.mark.slow  # ~250s
 @pytest.mark.parametrize("enable_rigid_rigid_contact", [False, True])
 def test_contact_pair_friction_resistance(enable_rigid_rigid_contact):
-    from genesis.engine.entities import RigidEntity
+    from deephunch.engine.entities import RigidEntity
 
     scene = gs.Scene(
         coupler_options=gs.options.IPCCouplerOptions(

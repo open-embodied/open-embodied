@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-import genesis as gs
+import deephunch as gs
 
 SCENE_POS = np.array([0.5, 0.5, 1.0])
 

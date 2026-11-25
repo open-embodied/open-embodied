@@ -1,4 +1,4 @@
-import genesis as gs
+import deephunch as gs
 import numpy as np
 import argparse
 

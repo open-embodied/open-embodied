@@ -1,6 +1,6 @@
 [submodule "doc"]
 	path = doc
-	url = https://github.com/Genesis-Embodied-AI/genesis-doc
-[submodule "genesis/ext/LuisaRender"]
-	path = genesis/ext/LuisaRender
+	url = https://github.com/DeepHunch-Embodied-AI/deephunch-doc
+[submodule "deephunch/ext/LuisaRender"]
+	path = deephunch/ext/LuisaRender
 	url = https://github.com/Alif-01/LuisaRender

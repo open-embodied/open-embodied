@@ -1,5 +1,5 @@
 import argparse
-import genesis as gs
+import deephunch as gs
 
 
 def main():

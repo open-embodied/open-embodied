@@ -7,7 +7,7 @@ from typing import NamedTuple
 import igl
 import numpy as np
 
-from genesis.utils.misc import tensor_to_array
+from deephunch.utils.misc import tensor_to_array
 
 
 class Crossing(NamedTuple):

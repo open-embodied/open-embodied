@@ -3,10 +3,10 @@ import pytest
 import trimesh
 from pydantic import BaseModel
 
-import genesis as gs
-import genesis.utils.mesh as mu
-from genesis.options.surfaces import Surface
-from genesis.options.textures import ColorTexture
+import deephunch as gs
+import deephunch.utils.mesh as mu
+from deephunch.options.surfaces import Surface
+from deephunch.options.textures import ColorTexture
 
 from ..utils.assertions import assert_equal
 

@@ -7,14 +7,14 @@ import numpy as np
 import torch
 import trimesh
 
-import genesis as gs
-from genesis.utils.image_exporter import FrameImageExporter
-from genesis.utils.misc import tensor_to_array
+import deephunch as gs
+from deephunch.utils.image_exporter import FrameImageExporter
+from deephunch.utils.misc import tensor_to_array
 
 
 def main():
     parser = argparse.ArgumentParser(description="Multi-solver depth camera demo")
-    parser.add_argument("-v", "--vis", action="store_true", help="Open Genesis 3D viewer")
+    parser.add_argument("-v", "--vis", action="store_true", help="Open DeepHunch 3D viewer")
     parser.add_argument("-g", "--gpu", action="store_true", help="Run on GPU instead of CPU")
     parser.add_argument("-b", "--num-envs", type=int, default=0, help="Number of parallel envs (0 = unbatched)")
     parser.add_argument("-s", "--steps", type=int, default=300, help="Number of simulation steps")

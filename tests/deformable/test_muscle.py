@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import genesis as gs
+import deephunch as gs
 
 
 @pytest.mark.parametrize("n_envs", [0, pytest.param(2, marks=pytest.mark.required)])

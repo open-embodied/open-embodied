@@ -11,8 +11,8 @@ Demonstrates:
 
 import os
 
-import genesis as gs
-from genesis.ext.pyrender.overlay import ImGuiOverlayPlugin
+import deephunch as gs
+from deephunch.ext.pyrender.overlay import ImGuiOverlayPlugin
 
 gs.init(backend=gs.cpu)
 

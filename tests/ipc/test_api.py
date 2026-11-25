@@ -9,15 +9,15 @@ if find_spec("uipc") is None:
     pytest.skip(SKIP_NO_IPC, allow_module_level=True)
 
 
-import genesis as gs
-from genesis.engine.couplers.ipc_coupler.data import COUPLING_TYPE
+import deephunch as gs
+from deephunch.engine.couplers.ipc_coupler.data import COUPLING_TYPE
 
 from .utils import (
     get_ipc_rigid_links_idx,
 )
 
 if TYPE_CHECKING:
-    from genesis.engine.couplers import IPCCoupler
+    from deephunch.engine.couplers import IPCCoupler
 
 
 @pytest.mark.required
@@ -134,7 +134,7 @@ def test_link_filter_strict():
 @pytest.mark.parametrize("coup_type", ["two_way_soft_constraint", "external_articulation"])
 @pytest.mark.parametrize("merge_fixed_links", [True, False])
 def test_find_target_links(coup_type, merge_fixed_links, show_viewer):
-    from genesis.engine.couplers.ipc_coupler.utils import find_target_link_for_fixed_merge
+    from deephunch.engine.couplers.ipc_coupler.utils import find_target_link_for_fixed_merge
 
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
@@ -246,7 +246,7 @@ def test_collision_delegation_ipc_vs_rigid(coup_type, enable_rigid_ground_contac
 
         ipc_excluded_geoms = {geom.idx for name in entity.material.coup_links for geom in entity.get_link(name).geoms}
     else:
-        with pytest.raises(gs.GenesisException):
+        with pytest.raises(gs.DeepHunchException):
             entity = scene.add_entity(
                 gs.morphs.URDF(
                     file="urdf/go2/urdf/go2.urdf",

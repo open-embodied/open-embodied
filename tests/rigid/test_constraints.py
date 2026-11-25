@@ -2,10 +2,10 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.engine.render_context import Lines
-from genesis.utils.misc import tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.engine.render_context import Lines
+from deephunch.utils.misc import tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 
@@ -385,9 +385,9 @@ def test_dynamic_screw(swinging_spindle, show_viewer, tol):
         rigid.add_screw_constraint(spindle_link.idx, nut_link.idx, axis=(0.0, 0.0, 1.0), pitch=PITCH)
     spindle.set_dofs_velocity(SWING_RATE, dofs_idx_local=0)
 
-    with pytest.raises(gs.GenesisException, match="already coupled"):
+    with pytest.raises(gs.DeepHunchException, match="already coupled"):
         rigid.add_screw_constraint(nut_helix.base_link.idx, post_helix.base_link.idx, axis=(0.0, 0.0, 1.0), pitch=PITCH)
-    with pytest.raises(gs.GenesisException, match="Invalid screw parameters"):
+    with pytest.raises(gs.DeepHunchException, match="Invalid screw parameters"):
         rigid.add_screw_constraint(
             post_helix.base_link.idx, nut_helix.base_link.idx, axis=(0.0, 0.0, np.inf), pitch=PITCH
         )
@@ -467,7 +467,7 @@ def test_dynamic_screw(swinging_spindle, show_viewer, tol):
     )
     n_screws = (rigid.get_equality_constraints()["type"] == gs.EQUALITY_TYPE.SCREW).sum(dim=-1)
     assert_equal(n_screws, (7, 8))
-    with pytest.raises(gs.GenesisException, match="max_dynamic_constraints"):
+    with pytest.raises(gs.DeepHunchException, match="max_dynamic_constraints"):
         rigid.add_weld_constraint(post_helix.base_link.idx, nut_helix.base_link.idx, envs_idx=[1])
 
 
@@ -581,7 +581,7 @@ def test_get_constraints_api(show_viewer, tol):
 
     link_a, link_b = robot.base_link.idx, cube.base_link.idx
     scene.rigid_solver.add_weld_constraint(link_a, link_b, envs_idx=[1])
-    with pytest.raises(gs.GenesisException, match="already coupled"):
+    with pytest.raises(gs.DeepHunchException, match="already coupled"):
         scene.rigid_solver.add_weld_constraint(link_a, link_b, envs_idx=[1])
 
     for as_tensor, to_torch in ((True, True), (True, False), (False, True), (False, False)):

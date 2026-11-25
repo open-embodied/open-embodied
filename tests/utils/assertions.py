@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from genesis.utils.misc import tensor_to_array
+from deephunch.utils.misc import tensor_to_array
 
 IMG_STD_ERR_THR = 1.0
 IMG_NUM_ERR_THR = 0.001

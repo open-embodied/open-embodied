@@ -4,7 +4,7 @@ import torch
 
 import quadrants as qd
 
-import genesis as gs
+import deephunch as gs
 
 from ..utils.assertions import assert_allclose
 
@@ -369,5 +369,5 @@ def test_force_fields(show_viewer, tol):
     # A zero or non-finite direction points nowhere
     for force_field_type in (gs.force_fields.Constant, gs.force_fields.Wind, gs.force_fields.Vortex):
         for direction in ((0.0, 0.0, 0.0), (float("nan"), 0.0, 1.0), (float("inf"), 0.0, 0.0)):
-            with pytest.raises(gs.GenesisException):
+            with pytest.raises(gs.DeepHunchException):
                 force_field_type(direction=direction)

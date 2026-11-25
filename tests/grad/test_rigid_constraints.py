@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
-from genesis.utils.misc import qd_to_torch
+import deephunch as gs
+from deephunch.utils.misc import qd_to_torch
 
 from ..utils.assertions import assert_allclose
 from .utils import assert_grad_matches_fd, make_diff_scene_pair
@@ -220,7 +220,7 @@ def test_equality_grad_matches_fd(model_name, n_rows, request, precision, show_v
     pair.scene_fd.step()
     cs = pair.scene_fd.rigid_solver.constraint_solver.constraint_state
     assert (qd_to_torch(cs.n_constraints_equality) == n_rows).all()
-    with pytest.raises(gs.GenesisException, match="Screw constraints are not supported yet"):
+    with pytest.raises(gs.DeepHunchException, match="Screw constraints are not supported yet"):
         pair.scene_ana.rigid_solver.add_screw_constraint(0, 1, axis=(0.0, 0.0, 1.0), pitch=0.0)
 
     # Large initial velocities: the anchor velocity-product bias entering aref is quadratic in velocity, so its

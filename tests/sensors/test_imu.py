@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
-import genesis.utils.geom as gu
+import deephunch as gs
+import deephunch.utils.geom as gu
 
 from ..utils.assertions import assert_allclose, assert_equal
 
@@ -144,7 +144,7 @@ def test_sensor(free_box, show_viewer, tol, n_envs):
     imu_coupled.set_mag_cross_axis_coupling(
         cross_axis_coupling=torch.full((3,), 0.2, dtype=gs.tc_float, device=gs.device), envs_idx=envs_idx
     )
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         imu_coupled.set_acc_cross_axis_coupling(cross_axis_coupling=(0.2, 0.2))
     scene.step()
     coupling = torch.full((max(n_envs, 1), 1), 0.1, dtype=gs.tc_float, device=gs.device)

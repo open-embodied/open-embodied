@@ -2,9 +2,9 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.utils.misc import tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.utils.misc import tensor_to_array
 
 from ..utils.assertions import assert_allclose
 from ..utils.assets import get_hf_dataset
@@ -445,20 +445,20 @@ def test_invalid_variant_specification_raises():
     )
 
     # PBD material should raise an exception
-    with pytest.raises(gs.GenesisException, match="created from one morph"):
+    with pytest.raises(gs.DeepHunchException, match="created from one morph"):
         scene.add_entity(
             morph=morphs_heterogeneous,
             material=gs.materials.PBD.Cloth(),
         )
 
     # A morph family that cannot be a variant at all
-    with pytest.raises(gs.GenesisException, match="only support Primitive, Mesh, URDF and MJCF"):
+    with pytest.raises(gs.DeepHunchException, match="only support Primitive, Mesh, URDF and MJCF"):
         scene.add_entity(
             morph=(gs.morphs.Box(size=(1.0, 1.0, 1.0)), gs.morphs.Terrain()),
         )
 
     # A basic object and an articulated robot in the same entity
-    with pytest.raises(gs.GenesisException, match="must be consistent"):
+    with pytest.raises(gs.DeepHunchException, match="must be consistent"):
         scene.add_entity(
             morph=(gs.morphs.Box(size=(1.0, 1.0, 1.0)), gs.morphs.MJCF(file=MJCF_SPHERE)),
         )
@@ -497,19 +497,19 @@ def test_morph_property_raises():
     assert single_obj.morph is single_morph
     assert rigid_obj.main_morph is rigid_morphs_heterogeneous[0]
     assert list(rigid_obj.morphs) == list(rigid_morphs_heterogeneous)
-    with pytest.raises(gs.GenesisException, match=r"Heterogeneous.*\.morphs") as exc_info:
+    with pytest.raises(gs.DeepHunchException, match=r"Heterogeneous.*\.morphs") as exc_info:
         _ = rigid_obj.morph
     assert ".main_morph" in str(exc_info.value)
 
     assert kinematic_obj.main_morph is kinematic_morphs_heterogeneous[0]
     assert list(kinematic_obj.morphs) == list(kinematic_morphs_heterogeneous)
-    with pytest.raises(gs.GenesisException, match=r"Heterogeneous.*\.morphs"):
+    with pytest.raises(gs.DeepHunchException, match=r"Heterogeneous.*\.morphs"):
         _ = kinematic_obj.morph
 
     # Attaching is unsupported both from a heterogeneous entity (as the reparented child) and onto one (as parent).
-    with pytest.raises(gs.GenesisException, match="[Hh]eterogeneous"):
+    with pytest.raises(gs.DeepHunchException, match="[Hh]eterogeneous"):
         rigid_obj.attach(single_obj)
-    with pytest.raises(gs.GenesisException, match="[Hh]eterogeneous"):
+    with pytest.raises(gs.DeepHunchException, match="[Hh]eterogeneous"):
         tool.attach(rigid_obj)
 
 
@@ -518,7 +518,7 @@ def test_articulated_structure_mismatch(fixed_base_dual_arm, fixed_base_dual_arm
     scene = gs.Scene(show_viewer=False)
 
     # two_cube_revolute has 1 revolute joint; two_link_arm has 2 continuous joints
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         scene.add_entity(
             morph=[
                 gs.morphs.URDF(file="urdf/simple/two_cube_revolute.urdf", pos=(0, 0, 0.1)),
@@ -527,7 +527,7 @@ def test_articulated_structure_mismatch(fixed_base_dual_arm, fixed_base_dual_arm
         )
 
     # Every variant shares the kinematic topology of the first one
-    with pytest.raises(gs.GenesisException, match="Link parent mismatch"):
+    with pytest.raises(gs.DeepHunchException, match="Link parent mismatch"):
         scene.add_entity(
             morph=[
                 gs.morphs.URDF(file=fixed_base_dual_arm, fixed=True),

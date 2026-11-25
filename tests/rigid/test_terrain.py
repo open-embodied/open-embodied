@@ -6,10 +6,10 @@ import pytest
 import torch
 import trimesh
 
-import genesis as gs
-import genesis.utils.geom as gu
-import genesis.utils.terrain as tu
-from genesis.utils.misc import get_assets_dir, tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+import deephunch.utils.terrain as tu
+from deephunch.utils.misc import get_assets_dir, tensor_to_array
 
 from ..utils.assertions import assert_allclose
 
@@ -232,7 +232,7 @@ def test_get_terrain_height(n_envs, tol):
     assert_allclose(boundary_heights[..., 0], 1.0, tol=tol)
     assert torch.isnan(boundary_heights[..., 1:]).all()
 
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         terrain.get_terrain_height((10.0, 20.0, 1.0), envs_idx=envs_idx)
 
     terrain.set_quat(gu.xyz_to_quat(np.array((5e-4, 0.0, 0.0))), envs_idx=envs_idx, relative=False)

@@ -2,7 +2,7 @@ import argparse
 import os
 from time import time
 
-import genesis as gs
+import deephunch as gs
 
 
 def main():

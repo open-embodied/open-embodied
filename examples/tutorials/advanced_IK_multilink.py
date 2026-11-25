@@ -2,8 +2,8 @@ import os
 
 import numpy as np
 
-import genesis as gs
-import genesis.utils.geom as gu
+import deephunch as gs
+import deephunch.utils.geom as gu
 
 gs.init(backend=gs.cpu, precision="32", logging_level="info")
 

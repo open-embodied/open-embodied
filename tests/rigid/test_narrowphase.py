@@ -12,19 +12,19 @@ new tensor into one of the existing structures, and have that work for both ndar
 
 errno is NOT designed for how we use it. Nevertheless with a couple of reasonable-ish assumptions we can work with it.
 
-Assumption 1: when code runs normally and correctly, nothing in Genesis production code (not including test code) will
+Assumption 1: when code runs normally and correctly, nothing in DeepHunch production code (not including test code) will
 ever set bit 16 of errno to any value except 0.
-Assumption 2: when taking a step, nothing in Genesis production code will set bit 16 of errno to any value at all -
+Assumption 2: when taking a step, nothing in DeepHunch production code will set bit 16 of errno to any value at all -
 including 0 - when running normally.
 
-Both of these assumptions are implicitly tested by our code, in that should Genesis code violate them, our tests will
+Both of these assumptions are implicitly tested by our code, in that should DeepHunch code violate them, our tests will
 almost certainly fail.
 
 Note that as part of our use of errno, we take full responsibility ourselves for resetting it to 0 before each test
-scenario. We do not assume - nor require - any existing Genesis code to handle this for us, for example by setting errno
+scenario. We do not assume - nor require - any existing DeepHunch code to handle this for us, for example by setting errno
 to 0 in set_qpos.
 
-Note that, for completeness, Genesis code does handle resetting errno to 0, inside set_qpos, but for simplicity, we make
+Note that, for completeness, DeepHunch code does handle resetting errno to 0, inside set_qpos, but for simplicity, we make
 resetting errno explicit in this test.
 """
 
@@ -44,20 +44,20 @@ from scipy.spatial import ConvexHull
 
 import quadrants as qd
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.engine.solvers.rigid.collider import gjk_support, support_field
-from genesis.engine.solvers.rigid.collider.data import ColliderState, GJKInfo, GJKScratch, GJKState
-from genesis.engine.solvers.rigid.collider.support_field import SupportFieldInfo
-from genesis.engine.solvers.rigid.data import DynInfo
-from genesis.utils.data import namespace, opt_in
-from genesis.utils.misc import qd_to_numpy, tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.engine.solvers.rigid.collider import gjk_support, support_field
+from deephunch.engine.solvers.rigid.collider.data import ColliderState, GJKInfo, GJKScratch, GJKState
+from deephunch.engine.solvers.rigid.collider.support_field import SupportFieldInfo
+from deephunch.engine.solvers.rigid.data import DynInfo
+from deephunch.utils.data import namespace, opt_in
+from deephunch.utils.misc import qd_to_numpy, tensor_to_array
 
 from ..conftest import TOL_SINGLE
 from ..utils.assertions import assert_allclose, assert_equal
 
 if TYPE_CHECKING:
-    from genesis.engine.entities import RigidEntity
+    from deephunch.engine.entities import RigidEntity
 
 
 ERRNO_CALLED_GJK_K1 = 1 << 16
@@ -275,7 +275,7 @@ def create_modified_narrowphase_file(tmp_path: Path):
         str: Path to the temporary modified narrowphase.py file
     """
     # Find the original narrowphase.py file
-    import genesis.engine.solvers.rigid.collider.narrowphase as narrowphase_module
+    import deephunch.engine.solvers.rigid.collider.narrowphase as narrowphase_module
 
     narrowphase_path = narrowphase_module.__file__
 
@@ -283,8 +283,8 @@ def create_modified_narrowphase_file(tmp_path: Path):
         content = f.read()
 
     # remove relative imports
-    content = content.replace("from . import ", "from genesis.engine.solvers.rigid.collider import ")
-    content = content.replace("from .", "from genesis.engine.solvers.rigid.collider.")
+    content = content.replace("from . import ", "from deephunch.engine.solvers.rigid.collider import ")
+    content = content.replace("from .", "from deephunch.engine.solvers.rigid.collider.")
 
     lines = content.split("\n")
 
@@ -415,7 +415,7 @@ class AnalyticalVsGJKSceneCreator:
         spec = importlib.util.spec_from_file_location("narrowphase_modified", temp_narrowphase_path)
         narrowphase_modified = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(narrowphase_modified)
-        from genesis.engine.solvers.rigid.collider import collider
+        from deephunch.engine.solvers.rigid.collider import collider
 
         self.monkeypatch.setattr(collider, "func_narrowphase_contact0", narrowphase_modified.func_narrowphase_contact0)
         self.monkeypatch.setattr(

@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
-from genesis.utils.misc import qd_to_torch, tensor_to_array
+import deephunch as gs
+from deephunch.utils.misc import qd_to_torch, tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 from ..utils.assets import get_hf_dataset
@@ -52,15 +52,15 @@ def test_position_control(show_viewer):
     # FIXME: We do NOT raise exception anymore when setting control targets that would have no effect
     # robot.set_dofs_kp(torch.zeros_like(MOTORS_KP), envs_idx=0)
     # robot.set_dofs_kv(torch.zeros_like(MOTORS_KD), envs_idx=0)
-    # with pytest.raises(gs.GenesisException):
+    # with pytest.raises(gs.DeepHunchException):
     #     robot.control_dofs_position(MOTORS_POS_TARGET, envs_idx=0)
-    # with pytest.raises(gs.GenesisException):
+    # with pytest.raises(gs.DeepHunchException):
     #     robot.control_dofs_position_velocity(MOTORS_POS_TARGET, MOTORS_VEL_TARGET, envs_idx=0)
-    # with pytest.raises(gs.GenesisException):
+    # with pytest.raises(gs.DeepHunchException):
     #     robot.control_dofs_velocity(MOTORS_VEL_TARGET, envs_idx=0)
     # robot.set_dofs_kv(MOTORS_KD, envs_idx=0)
     # robot.control_dofs_velocity(MOTORS_VEL_TARGET, envs_idx=0)
-    # with pytest.raises(gs.GenesisException):
+    # with pytest.raises(gs.DeepHunchException):
     #     robot.control_dofs_position(MOTORS_POS_TARGET, envs_idx=0)
     # robot.control_dofs_position_velocity(MOTORS_POS_TARGET, MOTORS_VEL_TARGET, envs_idx=0)
 
@@ -190,7 +190,7 @@ def test_drone_propellers_force_application(n_envs, substeps, show_viewer, tol):
 
     # Reset clears the tracked external force and accepts each supported RPM input shape.
     drone.set_propellers_rpm(BASE_RPM)
-    with np.testing.assert_raises(gs.GenesisException):
+    with np.testing.assert_raises(gs.DeepHunchException):
         drone.set_propellers_rpm(BASE_RPM)
     scene.reset()
     drone.set_propellers_rpm((BASE_RPM,) * 4)

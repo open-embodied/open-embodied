@@ -4,9 +4,9 @@ import torch
 import trimesh
 from scipy.optimize import brentq
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.utils.misc import tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.utils.misc import tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 from ..utils.assets import get_hf_dataset

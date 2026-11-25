@@ -16,9 +16,9 @@ import os
 
 import numpy as np
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.utils.misc import tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.utils.misc import tensor_to_array
 
 
 HALF = 0.1  # half-extent of both boxes

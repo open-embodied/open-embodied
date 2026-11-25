@@ -29,7 +29,7 @@ jobs:
   unit-tests:
     name: nyx_plugin-unit_tests
 
-    # The renderer bridges to Genesis through CUDA device pointers, so a GPU runner is required even though the
+    # The renderer bridges to DeepHunch through CUDA device pointers, so a GPU runner is required even though the
     # simulation itself could run on CPU. This is the runner the plugin's own CI uses, which additionally makes its
     # reference images comparable.
     runs-on: gpu-t4-4-core
@@ -52,7 +52,7 @@ jobs:
       - name: Install Git LFS
         run: sudo apt-get update && sudo apt-get install -y git-lfs
 
-      - name: Checkout the revision of Genesis under test
+      - name: Checkout the revision of DeepHunch under test
         uses: actions/checkout@v5
         with:
           repository: ${{ github.event.workflow_run.head_repository.full_name }}
@@ -89,9 +89,9 @@ jobs:
       - name: Checkout the Nyx plugin
         uses: actions/checkout@v5
         with:
-          repository: Genesis-Embodied-AI/nyx-genesis-plugin
+          repository: DeepHunch-Embodied-AI/nyx-deephunch-plugin
           ref: ${{ steps.plugin.outputs.commit }}
-          token: ${{ secrets.GENESIS_REPO_CONTENTS_READ_ONLY_ACCESS_TOKEN }}
+          token: ${{ secrets.DEEPHUNCH_REPO_CONTENTS_READ_ONLY_ACCESS_TOKEN }}
           path: nyx_plugin
           lfs: true
           persist-credentials: false
@@ -110,13 +110,13 @@ jobs:
       - name: Install the GLU library
         run: sudo apt-get install -y libglu1-mesa
 
-      - name: Install Genesis and the Nyx plugin
+      - name: Install DeepHunch and the Nyx plugin
         # Process substitution feeds the overrides without writing a file, so bash is required.
         shell: bash
         run: |
           uv pip install --system torch --index-url https://download.pytorch.org/whl/cu128
 
-          # The plugin requires a released 'genesis-world', which resolution would install over the revision under
+          # The plugin requires a released 'deephunch-world', which resolution would install over the revision under
           # test, leaving the tests exercising something else entirely. Overriding that single requirement with the
           # checkout keeps every other dependency of the plugin resolved from its own metadata. The plugin pins the
           # renderer to an internal index that this repository has no credentials for, so that source alone is
@@ -124,7 +124,7 @@ jobs:
           # it replaces the requirement it overrides in full, extras included.
           uv pip install --system \
               --no-sources-package gs-nyx \
-              --overrides <(printf 'genesis-world[dev] @ file://%s\n' "$GITHUB_WORKSPACE") \
+              --overrides <(printf 'deephunch-world[dev] @ file://%s\n' "$GITHUB_WORKSPACE") \
               ".[dev]" ./nyx_plugin
       - name: Run Nyx plugin unit tests
         # Running from the plugin root keeps its own pytest configuration in charge, and makes the paths the tests

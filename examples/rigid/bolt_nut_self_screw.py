@@ -1,7 +1,7 @@
 """Nut screwing itself down a fixed bolt via non-convex thread contact.
 
 The bolt and nut are procedurally generated with matching ISO-metric-style threads (see
-genesis/assets/meshes/bolt_nut/generate_bolt_nut.py) and loaded with convexify=False so
+deephunch/assets/meshes/bolt_nut/generate_bolt_nut.py) and loaded with convexify=False so
 the full helix drives collision. The bolt is fixed, shaft up; a steady torque (a wrench)
 turns the nut, whose threads convert the rotation into descent until it seats on the head.
 
@@ -14,7 +14,7 @@ it; releasing lets the self-locking thread hold it).
 import argparse
 import os
 
-import genesis as gs
+import deephunch as gs
 
 
 def main():

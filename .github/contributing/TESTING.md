@@ -73,7 +73,7 @@ From `tests/conftest.py`:
 
 | Fixture | Scope | Description |
 |---------|-------|-------------|
-| `initialize_genesis` | function | Auto-initializes and destroys Genesis per test |
+| `initialize_deephunch` | function | Auto-initializes and destroys DeepHunch per test |
 | `backend` | session | Returns configured backend (gs.cpu/gs.gpu) |
 | `precision` | function | Returns precision ("32" or "64") |
 | `show_viewer` | session | Whether viewer is enabled |
@@ -85,10 +85,10 @@ Every test that calls `scene.step()` must take the `show_viewer` fixture, pass i
 
 ```python
 import pytest
-import genesis as gs
+import deephunch as gs
 
-def test_example(initialize_genesis, backend):
-    """Test runs with auto-initialized Genesis."""
+def test_example(initialize_deephunch, backend):
+    """Test runs with auto-initialized DeepHunch."""
     scene = gs.Scene()
     entity = scene.add_entity(gs.morphs.Box(size=(1, 1, 1)))
     scene.build()
@@ -96,12 +96,12 @@ def test_example(initialize_genesis, backend):
     assert entity.get_pos()[2] > 0
 
 @pytest.mark.slow
-def test_long_simulation(initialize_genesis):
+def test_long_simulation(initialize_deephunch):
     """Mark slow tests explicitly."""
     pass
 
 @pytest.mark.required
-def test_critical_feature(initialize_genesis):
+def test_critical_feature(initialize_deephunch):
     """Mark tests that must always pass."""
     pass
 ```

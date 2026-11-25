@@ -2,7 +2,7 @@ import argparse
 import os
 
 
-import genesis as gs
+import deephunch as gs
 
 
 def main():

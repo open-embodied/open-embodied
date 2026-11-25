@@ -10,8 +10,8 @@ grip normal force. The checker pattern shows the rotation in the viewer.
 import argparse
 import xml.etree.ElementTree as ET
 
-import genesis as gs
-from genesis.utils.misc import get_assets_dir
+import deephunch as gs
+from deephunch.utils.misc import get_assets_dir
 
 
 RADIUS = 0.1

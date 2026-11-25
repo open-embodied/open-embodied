@@ -10,9 +10,9 @@ import trimesh
 from scipy.spatial import ConvexHull
 from scipy.spatial.qhull import QhullError
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.utils.misc import tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.utils.misc import tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 from ..utils.assets import get_hf_dataset
@@ -1825,7 +1825,7 @@ def test_num_contact_overflow(
     # GPU, where the check may not block, so an error flagged by the first step raises within that many steps. The
     # other errors, whose phase is left unpinned, raise within the window over which the bowls pile up.
     n_steps_raise = 2 if gs.backend == gs.cpu else 3
-    with nullcontext() if error_pattern is None else pytest.raises(gs.GenesisException, match=error_pattern):
+    with nullcontext() if error_pattern is None else pytest.raises(gs.DeepHunchException, match=error_pattern):
         for _ in range(n_steps_raise if is_warned_by_build else 15):
             scene.step()
 
@@ -2097,7 +2097,7 @@ def test_gpu_simulation_determinism(prefer_decomposed_solver, contact_pruning_to
     #   - contact set    -> narrowphase / pruning
     #   - contact order  -> contact sort
     #   - dofs velocity  -> constraint solve
-    from genesis.engine.solvers.rigid.data import RigidConfig
+    from deephunch.engine.solvers.rigid.data import RigidConfig
 
     if prefer_decomposed_solver is not None:
         init_orig = RigidConfig.__init__

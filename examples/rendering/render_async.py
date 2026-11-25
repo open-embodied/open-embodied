@@ -1,7 +1,7 @@
 import os
 import threading
 
-import genesis as gs
+import deephunch as gs
 
 
 def run_sim(scene):

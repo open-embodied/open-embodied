@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
-from genesis.utils import set_random_seed
-from genesis.utils.geom import R_to_quat
-from genesis.utils.misc import qd_to_numpy, qd_to_torch, tensor_to_array
+import deephunch as gs
+from deephunch.utils import set_random_seed
+from deephunch.utils.geom import R_to_quat
+from deephunch.utils.misc import qd_to_numpy, qd_to_torch, tensor_to_array
 
 from ..utils.assertions import assert_allclose
 
@@ -308,7 +308,7 @@ def test_diff_unsupported_configuration_raises():
     # A sphere/ellipsoid pair has an everywhere-curved Minkowski boundary on which diff_gjk's EPA never converges,
     # so it would silently tunnel; the build must reject it instead. A sphere/sphere pair is exempt, since it is
     # reconstructed by its analytic detection.
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         scene.build()
 
     # Torsional / rolling friction rows have no manual reverse; the build must reject them
@@ -327,11 +327,11 @@ def test_diff_unsupported_configuration_raises():
             pos=(0.0, 0.0, 0.5),
         ),
     )
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         scene.build()
 
     # An opt-in algorithm that diff sim does not support yet raises before build, here accelerated box-box collision
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         gs.Scene(
             sim_options=gs.options.SimOptions(requires_grad=True),
             rigid_options=gs.options.RigidOptions(box_box_detection=True),
@@ -358,7 +358,7 @@ def test_diff_unsupported_configuration_raises():
             pos=(0.0, 0.0, 0.8),
         ),
     )
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         child.attach(base)
 
 
@@ -573,9 +573,9 @@ def test_contact_detection_jacobian_matches_fd(grad_capsule):
 @pytest.mark.debug(False)
 def test_constraint_solver_backward_matches_fd(monkeypatch):
     # Engine modules resolve gs dtypes at import time, which requires gs.init: import after initialization
-    from genesis.engine.solvers.rigid.abd.misc import FORWARD_STATUS
-    from genesis.engine.solvers.rigid.constraint.solver import func_solve_body, func_solve_init
-    from genesis.engine.solvers.rigid.rigid_solver import kernel_step_1
+    from deephunch.engine.solvers.rigid.abd.misc import FORWARD_STATUS
+    from deephunch.engine.solvers.rigid.constraint.solver import func_solve_body, func_solve_init
+    from deephunch.engine.solvers.rigid.rigid_solver import kernel_step_1
 
     # fp64 is required: the parameter-side inputs (aref, efc_D, jac, mass) move the loss by far less than its own
     # fp32 resolution at any usable step size, so their finite-difference deltas drown at fp32

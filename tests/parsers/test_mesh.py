@@ -12,11 +12,11 @@ from PIL import Image
 
 import coacd
 
-import genesis as gs
-import genesis.utils.geom as gu
-import genesis.utils.gltf as gltf_utils
-import genesis.utils.mesh as mu
-from genesis.engine.render_context import DynamicMesh
+import deephunch as gs
+import deephunch.utils.geom as gu
+import deephunch.utils.gltf as gltf_utils
+import deephunch.utils.mesh as mu
+from deephunch.engine.render_context import DynamicMesh
 
 from ..utils.assertions import assert_allclose, assert_equal
 from ..utils.assets import get_hf_dataset
@@ -68,7 +68,7 @@ def test_morph_scale(scale, mesh_file, mesh_urdf):
     assert obj_orig.n_vgeoms == obj_scaled.n_vgeoms
 
     is_isotropic = np.unique(scale).size == 1
-    with nullcontext() if is_isotropic else pytest.raises(gs.GenesisException):
+    with nullcontext() if is_isotropic else pytest.raises(gs.DeepHunchException):
         robot_scaled = scene.add_entity(
             gs.morphs.URDF(
                 file=mesh_urdf,
@@ -497,7 +497,7 @@ def test_glb_parse_material(glb_file):
 
 @pytest.mark.required
 def test_glb_shared_texture_not_duplicated(tmp_path):
-    from genesis.vis.batch_renderer import GenesisGeomRetriever
+    from deephunch.vis.batch_renderer import DeepHunchGeomRetriever
 
     n_submeshes = 16
     texture_size = 64
@@ -553,7 +553,7 @@ def test_glb_shared_texture_not_duplicated(tmp_path):
     assert all([array is rgba_arrays[0] for array in rgba_arrays])
 
     scene.build()
-    retriever = GenesisGeomRetriever(scene.rigid_solver, seg_level="entity")
+    retriever = DeepHunchGeomRetriever(scene.rigid_solver, seg_level="entity")
     retriever.build()
     static_args = retriever.retrieve_rigid_meshes_static()
     assert len(static_args["tex_widths"]) == 1

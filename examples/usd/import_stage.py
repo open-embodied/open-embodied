@@ -4,9 +4,9 @@ import os
 import numpy as np
 from huggingface_hub import snapshot_download
 
-import genesis as gs
-from genesis.utils.misc import tensor_to_array
-import genesis.utils.geom as gu
+import deephunch as gs
+from deephunch.utils.misc import tensor_to_array
+import deephunch.utils.geom as gu
 
 
 class JointAnimator:
@@ -63,7 +63,7 @@ def main():
 
     asset_path = snapshot_download(
         repo_type="dataset",
-        repo_id="Genesis-Intelligence/assets",
+        repo_id="DeepHunch-Intelligence/assets",
         revision="c50bfe3e354e105b221ef4eb9a79504650709dd2",
         allow_patterns="usd/Refrigerator055/*",
         max_workers=1,

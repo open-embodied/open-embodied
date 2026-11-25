@@ -18,10 +18,10 @@ from huggingface_hub.hf_api import RepoFile
 from PIL import Image, UnidentifiedImageError
 from requests.exceptions import HTTPError
 
-from genesis.constants import GLTF_FORMATS, MESH_FORMATS, MJCF_FORMAT, URDF_FORMAT, USD_FORMATS
-from genesis.recorders.trajectory import TRAJECTORY_FORMAT
+from deephunch.constants import GLTF_FORMATS, MESH_FORMATS, MJCF_FORMAT, URDF_FORMAT, USD_FORMATS
+from deephunch.recorders.trajectory import TRAJECTORY_FORMAT
 
-REPOSITY_URL = "Genesis-Embodied-AI/Genesis"
+REPOSITY_URL = "DeepHunch-Embodied-AI/DeepHunch"
 DEFAULT_BRANCH_NAME = "main"
 
 HUGGINGFACE_ASSETS_REVISION = "deffbe1685e5ce6aa289efdd541f762f1eb3353f"
@@ -36,7 +36,7 @@ TEST_DIR = os.path.dirname(os.path.dirname(__file__))
 # different snapshots edit different lines and merge without conflict.
 SNAPSHOTS_LOCK_PATH = os.path.join(TEST_DIR, "snapshots.lock")
 
-SNAPSHOTS_REPO_ID = "Genesis-Intelligence/snapshots"
+SNAPSHOTS_REPO_ID = "DeepHunch-Intelligence/snapshots"
 
 # Revision of a lock line whose local file '--snapshot-update' regenerated, until '--snapshot-sync' pins it
 SNAPSHOTS_PENDING_REVISION = "pending"
@@ -86,9 +86,9 @@ def mark_snapshots_pending(snapshots_digest):
 def get_snapshots_pull_requests():
     """Return the pull requests of the snapshots repository that belong to the current branch, newest first.
 
-    They are the Hugging Face pull requests whose title names the genesis-world pull request of the current git branch
-    ('genesis-world#<number>'), which the GitHub CLI (gh) looks up, so a title may carry any other text. The title of a
-    new pull request and the address of the genesis-world pull request are returned first.
+    They are the Hugging Face pull requests whose title names the deephunch-world pull request of the current git branch
+    ('deephunch-world#<number>'), which the GitHub CLI (gh) looks up, so a title may carry any other text. The title of a
+    new pull request and the address of the deephunch-world pull request are returned first.
     """
     try:
         pr_number, pr_url = subprocess.check_output(
@@ -96,16 +96,16 @@ def get_snapshots_pull_requests():
         ).split()
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         raise RuntimeError(
-            "Publishing snapshots requires a genesis-world pull request for the current branch, found by the GitHub CLI "
+            "Publishing snapshots requires a deephunch-world pull request for the current branch, found by the GitHub CLI "
             "'gh'. Open one first, as a draft if needed."
         ) from e
-    title = f"Update snapshots for genesis-world#{pr_number}"
+    title = f"Update snapshots for deephunch-world#{pr_number}"
     discussions = [
         discussion
         for discussion in HfApi().get_repo_discussions(
             repo_id=SNAPSHOTS_REPO_ID, discussion_type="pull_request", repo_type="dataset"
         )
-        if re.search(rf"\bgenesis-world#{pr_number}\b", discussion.title)
+        if re.search(rf"\bdeephunch-world#{pr_number}\b", discussion.title)
     ]
     return title, pr_url, discussions
 
@@ -284,7 +284,7 @@ def get_hf_dataset(
             else:
                 asset_path = snapshot_download(
                     repo_type="dataset",
-                    repo_id=f"Genesis-Intelligence/{repo_name}",
+                    repo_id=f"DeepHunch-Intelligence/{repo_name}",
                     revision=HUGGINGFACE_ASSETS_REVISION,
                     allow_patterns=pattern,
                     max_workers=1,

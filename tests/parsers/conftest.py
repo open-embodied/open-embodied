@@ -16,10 +16,10 @@ with lazy_imports():
     import trimesh
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdUtils
 
-    import genesis as gs
-    import genesis.utils.geom as gu
-    from genesis.utils.misc import get_assets_dir
-    from genesis.utils.usd import UsdContext
+    import deephunch as gs
+    import deephunch.utils.geom as gu
+    from deephunch.utils.misc import get_assets_dir
+    from deephunch.utils.usd import UsdContext
 
     from ..utils.assertions import assert_allclose, assert_equal
     from ..utils.assets import get_hf_dataset
@@ -1181,7 +1181,7 @@ def all_joints_mjcf():
         gainprm="120.0 0 0",
         biasprm="0 -120.0 -12.0",
     )
-    # Genesis reads a ball joint actuator with a unit gear as the same PD gains on each of the three DOFs
+    # DeepHunch reads a ball joint actuator with a unit gear as the same PD gains on each of the three DOFs
     ET.SubElement(
         actuator,
         "general",

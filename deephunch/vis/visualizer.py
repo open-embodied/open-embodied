@@ -1,0 +1,375 @@
+import sys
+
+import pyglet
+
+import deephunch as gs
+from deephunch.engine.state_change import StateChange, Subscriber
+from deephunch.repr_base import RBC
+from deephunch.utils.misc import BuildableMixin
+
+from .camera import Camera
+from .rasterizer import Rasterizer
+
+VIEWER_DEFAULT_HEIGHT_RATIO = 0.5
+VIEWER_DEFAULT_ASPECT_RATIO = 0.75
+# Headless fallback screen height. With the ratios above it yields a 640x480 default window, small enough to fit the
+# constrained virtual displays of CI runners (e.g. GitHub-hosted macOS).
+VIEWER_DEFAULT_SCREEN_HEIGHT = 960
+
+
+class DummyViewerLock:
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        pass
+
+
+class Visualizer(BuildableMixin, RBC):
+    """
+    This abstraction layer manages viewer and renderers.
+    """
+
+    def __init__(self, scene, show_viewer, vis_options, viewer_options, renderer_options):
+        self._t = -1
+        self._scene = scene
+
+        self._context = None
+        self._viewer = None
+        self._rasterizer = None
+        self._raytracer = None
+        self._batch_renderer = None
+        self._cameras = gs.List()
+        self.viewer_lock = DummyViewerLock()
+
+        # Rasterizer context is shared by viewer and rasterizer
+        try:
+            from .rasterizer_context import RasterizerContext
+            from .viewer import Viewer
+
+        except Exception as e:
+            gs.raise_exception_from("Rendering not working on this machine.", e)
+        self._context = RasterizerContext(vis_options)
+
+        if pyglet.options["headless"]:
+            # Headless: there is no real display to measure. The viewer renders offscreen, so fall back to a default
+            # screen size for computing the default window resolution below.
+            screen_height, screen_scale = VIEWER_DEFAULT_SCREEN_HEIGHT, 1.0
+            self._has_display = False
+        else:
+            try:
+                screen_height, _screen_width, screen_scale = gs.utils.try_get_display_size()
+                self._has_display = True
+            except Exception as e:
+                if show_viewer:
+                    gs.raise_exception_from("No display detected. Use `show_viewer=False` for headless mode.", e)
+                self._has_display = False
+
+        if show_viewer:
+            if gs._scene_registry:
+                gs.raise_exception(
+                    "Interactive viewer not supported when managing multiple scenes. Please set `show_viewer=False` "
+                    "or call `del scene`."
+                )
+
+            # The platform defaults are resolved into a copy handed to the viewer, so the options the scene was authored
+            # with stay as written and an export of the scene opens on any display and platform.
+            resolved = {}
+            if viewer_options.res is None:
+                viewer_height = (screen_height * screen_scale) * VIEWER_DEFAULT_HEIGHT_RATIO
+                viewer_width = viewer_height / VIEWER_DEFAULT_ASPECT_RATIO
+                resolved["res"] = (int(viewer_width), int(viewer_height))
+            run_in_thread = viewer_options.run_in_thread
+            if run_in_thread is None:
+                run_in_thread = sys.platform != "darwin"
+            elif run_in_thread and sys.platform == "darwin":
+                gs.raise_exception("Running viewer in background thread is not supported on MacOS.")
+            resolved["run_in_thread"] = run_in_thread
+
+            self._viewer = Viewer(viewer_options.model_copy(update=resolved), self._context)
+            if not run_in_thread:
+                gs.logger.warning(
+                    "Interactive viewer running in main thread. It will only be responsive if a simulation is running."
+                )
+
+        # Rasterizer is always needed for depth and segmentation mask rendering.
+        self._rasterizer = Rasterizer(self._viewer, self._context)
+
+        if isinstance(renderer_options, gs.renderers.BatchRenderer):
+            from .batch_renderer import BatchRenderer
+
+            self._renderer = self._batch_renderer = BatchRenderer(self, renderer_options, vis_options)
+        elif isinstance(renderer_options, gs.renderers.RayTracer):
+            from .raytracer import Raytracer
+
+            self._renderer = self._raytracer = Raytracer(renderer_options, vis_options)
+        elif isinstance(renderer_options, gs.renderers.Rasterizer):
+            self._renderer = self._rasterizer
+
+    def __del__(self):
+        self.destroy()
+
+    def destroy(self):
+        # Cameras go first, so that a recording still running is finalized while the renderers are alive.
+        for camera in self._cameras:
+            camera.destroy()
+
+        if self._rasterizer is not None:
+            self._rasterizer.destroy()
+            self._rasterizer = None
+        if self._viewer is not None:
+            self._viewer.destroy()
+            self._viewer = None
+        if self._batch_renderer is not None:
+            self._batch_renderer.destroy()
+            self._batch_renderer = None
+        if self._raytracer is not None:
+            self._raytracer.destroy()
+            self._raytracer = None
+        if self._context is not None:
+            self._context.destroy()
+            del self._context
+            self._context = None
+        self.viewer_lock = None
+        self._renderer = None
+        self._is_built = False
+
+    def add_camera(self, res, pos, lookat, up, model, fov, lens, GUI, spp, denoise, near, far, env_idx, debug):
+        cam_idx = len([camera for camera in self._cameras if camera.debug == debug])
+        camera = Camera(
+            self,
+            cam_idx,
+            model,
+            res,
+            pos,
+            lookat,
+            up,
+            fov,
+            lens,
+            GUI,
+            spp,
+            denoise,
+            near,
+            far,
+            env_idx=env_idx,
+            debug=debug,
+        )
+        self._cameras.append(camera)
+        return camera
+
+    def add_mesh_light(self, mesh, color, intensity, pos, quat, revert_dir, double_sided, cutoff):
+        if self._raytracer is not None:
+            self._raytracer.add_mesh_light(mesh, color, intensity, pos, quat, revert_dir, double_sided, cutoff)
+        else:
+            gs.raise_exception("`add_mesh_light` is specific to raytracer renderer.")
+
+    def add_light(self, pos, dir, color, intensity, directional, castshadow, cutoff, attenuation):
+        if self._batch_renderer is not None:
+            self._batch_renderer.add_light(pos, dir, color, intensity, directional, castshadow, cutoff, attenuation)
+        else:
+            gs.raise_exception("`add_light` is specific to batch renderer.")
+
+    @gs.assert_built
+    def reset(self, refresh_viewer=True):
+        """Drop what every renderer drew of the scene, so that each one draws it anew from its current state.
+
+        The cameras sync at their next render. 'refresh_viewer' repaints the interactive viewer right away, which
+        otherwise repaints when a refresh is due (see 'Viewer.update').
+        """
+        self._t = -1
+
+        self._context.reset()
+
+        if self._raytracer is not None:
+            self._raytracer.reset()
+
+        if self._batch_renderer is not None:
+            self._batch_renderer.reset()
+
+        if self._viewer is not None:
+            if refresh_viewer:
+                self._viewer.update(auto_refresh=True, force=True)
+            else:
+                self._viewer.update()
+
+    @gs.assert_unbuilt
+    def build(self):
+        self._context.build(self._scene)
+
+        if self._viewer is not None:
+            # Setter changes, of the state of a solver or of the appearance of an entity, are shown in the viewer right
+            # away, the nodes of the shapes whose scoped context refreshed alone being updated (see
+            # 'RasterizerContext._sync_shapes'). The window only repaints when a refresh is due, so that a loop of
+            # setters does not pay one repaint per call.
+            on_setter = Subscriber(
+                to=frozenset((StateChange.GEOMETRY,)), callback=lambda change, **indices: self.sync()
+            )
+            for solver in self._scene.sim.active_solvers:
+                solver.changelog.subscribe(on_setter)
+            self._scene.sim.render_context.subscribe(
+                Subscriber(to=frozenset((StateChange.VISUAL,)), callback=lambda change, **indices: self.sync())
+            )
+            # The window draws its first frames as it builds, which show the scene once its nodes exist
+            self._context.update(force_render=True)
+            self._viewer.build(self._scene)
+            self.viewer_lock = self._viewer.lock
+
+        self._rasterizer.build()
+        if self._raytracer is not None:
+            self._raytracer.build(self._scene)
+
+        for camera in self._cameras:
+            camera.build()
+
+        # The nodes of the shared renderers are made once every view drawn from them is known, so that they hold the
+        # representations these views show alone (see 'RasterizerContext.add_view').
+        self._context.update(force_render=True)
+
+        # Batch renderer needs to be built after cameras are built
+        if self._batch_renderer is not None:
+            self._batch_renderer.build()
+
+        # Fully initialized at this point
+        self._is_built = True
+
+        # Make sure that the viewer is fully compiled and in a clean state
+        self.reset()
+
+    def sync(self):
+        """Sync every renderer with the current state of the scene.
+
+        The renderers shared with the interactive viewer sync right away, while the raytracer and the batch renderer
+        sync at their next render. The interactive viewer then refreshes when a refresh is due (see 'Viewer.update').
+        """
+        if self._raytracer is not None:
+            self._raytracer.reset()
+        if self._batch_renderer is not None:
+            self._batch_renderer.reset()
+        # Without 'ViewerOptions.update_on_setters', the renderers shared with the viewer sync at its next refresh, or
+        # at the next render of a camera, so that a loop of setters does not pay one sync per call.
+        if self._viewer is None or self._viewer.update_on_setters:
+            self._context.update(force_render=True)
+        else:
+            self._context.reset()
+        if self._viewer is not None:
+            self._viewer.update()
+
+    def update_on_sim_step(self, advanced, auto=None):
+        """Show a simulation step: refresh the viewer when due, run its per-step callbacks and pace the loop.
+
+        If the step 'advanced' the simulation, the loop is paced to real time, otherwise (a paused scene) to the refresh
+        rate of the viewer (see 'Viewer.update_on_sim_step'). 'auto' is passed on to 'Viewer.update'.
+        """
+        if self._viewer is not None:
+            self._viewer.update(auto_refresh=auto)
+            self._viewer.update_on_sim_step(advanced=advanced)
+
+    def update(self, force=True, auto=None):
+        """Sync the visualization with the scene and refresh the interactive viewer.
+
+        With 'force', every renderer syncs and the viewer refreshes right away, which shows a change made outside of a
+        step. Without it, the call does to the viewer what a step does, for loops stepping with
+        'update_visualizer=False' (see 'update_on_sim_step'). 'auto' is passed on to 'Viewer.update'.
+        """
+        if force:  # force update
+            self.reset()
+        else:
+            self.update_on_sim_step(advanced=True, auto=auto)
+
+    def update_cameras(self, force_render: bool = False) -> None:
+        """Move the cameras attached to a link or following an entity, once per step unless forced to."""
+        if not force_render and self._t >= self.scene.sim.cur_step_global:
+            return
+        self._t = self._scene.sim.cur_step_global
+
+        for camera in self._cameras:
+            if camera.is_built:
+                if camera._attached_link is not None:
+                    camera.move_to_attach()
+                elif camera._followed_entity is not None:
+                    camera.update_following()
+
+    def colorize_seg_idxc_arr(self, seg_idxc_arr):
+        if self._batch_renderer is not None:
+            return self._batch_renderer.colorize_seg_idxc_arr(seg_idxc_arr)
+        else:
+            return self._context.colorize_seg_idxc_arr(seg_idxc_arr)
+
+    # ------------------------------------------------------------------------------------
+    # ----------------------------------- properties -------------------------------------
+    # ------------------------------------------------------------------------------------
+
+    @property
+    def is_built(self) -> bool:
+        return self._is_built
+
+    @property
+    def viewer(self):
+        return self._viewer
+
+    @property
+    def rasterizer(self):
+        return self._rasterizer
+
+    @gs.assert_built
+    @property
+    def is_software(self):
+        if self._batch_renderer is not None or self._raytracer is not None:
+            return False
+        if self._viewer is not None:
+            assert self._viewer._pyrender_viewer is not None
+            return self._viewer._pyrender_viewer._is_software
+        assert self._rasterizer is not None and self._rasterizer._renderer is not None
+        return self._rasterizer._renderer._is_software
+
+    @property
+    def batch_renderer(self):
+        return self._batch_renderer
+
+    @property
+    def context(self):
+        return self._context
+
+    @property
+    def link_frames(self) -> bool:
+        """Whether the frames of the links of every kinematic and rigid entity are drawn (see
+        ``KinematicVisOptions.link_frames``)."""
+        sim = self._scene.sim
+        solvers = (sim.kinematic_solver, sim.rigid_solver)
+        return all(solver.render_context.link_frames for solver in solvers if solver.is_active)
+
+    @gs.assert_built
+    def set_link_frames(self, link_frames: bool) -> None:
+        """Draw the frames of the links of every kinematic and rigid entity, or stop drawing them (see
+        ``KinematicVisOptions.link_frames``)."""
+        sim = self._scene.sim
+        for solver in (sim.kinematic_solver, sim.rigid_solver):
+            if solver.is_active:
+                solver.render_context.set_link_frames(link_frames)
+
+    @property
+    def raytracer(self):
+        return self._raytracer
+
+    @property
+    def renderer(self):
+        return self._renderer
+
+    @property
+    def scene(self):
+        return self._scene
+
+    @property
+    def has_display(self):
+        return self._has_display
+
+    @property
+    def cameras(self):
+        return self._cameras
+
+    @property
+    def segmentation_idx_dict(self):
+        if self._batch_renderer is not None:
+            return self._batch_renderer.seg_idxc_map
+        else:
+            return self._context.seg_idxc_map

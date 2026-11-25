@@ -3,8 +3,8 @@ from typing import NamedTuple
 import numpy as np
 import torch
 
-import genesis as gs
-from genesis.engine.entities import RigidEntity
+import deephunch as gs
+from deephunch.engine.entities import RigidEntity
 
 from ..utils.assertions import assert_allclose
 

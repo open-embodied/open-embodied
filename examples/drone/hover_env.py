@@ -3,8 +3,8 @@ import math
 import copy
 from tensordict import TensorDict
 
-import genesis as gs
-from genesis.utils.geom import (
+import deephunch as gs
+from deephunch.utils.geom import (
     quat_to_xyz,
     transform_by_quat,
     inv_quat,

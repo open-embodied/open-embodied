@@ -3,8 +3,8 @@ import math
 import os
 
 
-import genesis as gs
-import genesis.utils.geom as gu
+import deephunch as gs
+import deephunch.utils.geom as gu
 
 
 def main():

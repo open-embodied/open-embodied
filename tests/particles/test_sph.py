@@ -11,8 +11,8 @@ import pickle
 import numpy as np
 import pytest
 
-import genesis as gs
-from genesis.utils.misc import qd_to_numpy, tensor_to_array
+import deephunch as gs
+from deephunch.utils.misc import qd_to_numpy, tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 
@@ -83,7 +83,7 @@ def get_sph_density(scene, n_particles):
     densities : np.ndarray
         Array of density values for all particles.
     """
-    from genesis.engine.solvers.sph_solver import kernel_compute_rho_and_dfsph_factor, kernel_reorder_particles
+    from deephunch.engine.solvers.sph_solver import kernel_compute_rho_and_dfsph_factor, kernel_reorder_particles
 
     sph_solver = scene.sph_solver
 

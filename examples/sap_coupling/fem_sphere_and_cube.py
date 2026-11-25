@@ -1,5 +1,5 @@
 import argparse
-import genesis as gs
+import deephunch as gs
 import os
 from huggingface_hub import snapshot_download
 
@@ -50,7 +50,7 @@ def main():
     )
     asset_path = snapshot_download(
         repo_type="dataset",
-        repo_id="Genesis-Intelligence/assets",
+        repo_id="DeepHunch-Intelligence/assets",
         revision="4d96c3512df4421d4dd3d626055d0d1ebdfdd7cc",
         allow_patterns="cube8.obj",
         max_workers=1,

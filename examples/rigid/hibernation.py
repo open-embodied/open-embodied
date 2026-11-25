@@ -18,9 +18,9 @@ import argparse
 import math
 import os
 
-import genesis as gs
-from genesis.utils.misc import qd_to_numpy
-from genesis.utils.tools import RunningMean
+import deephunch as gs
+from deephunch.utils.misc import qd_to_numpy
+from deephunch.utils.tools import RunningMean
 
 
 RECORDING_FPS = 30

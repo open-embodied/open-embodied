@@ -9,14 +9,14 @@ import pytest
 import av
 import OpenGL.error
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.options.sensors import RasterizerCameraOptions
-from genesis.recorders.trajectory import TRAJECTORY_FORMAT, Trajectory
-from genesis.utils.misc import tensor_to_array
-from genesis.utils.video_encoder import VideoEncoder
-from genesis.vis.keybindings import Key, KeyAction, Keybind, KeyMod, MouseButton
-from genesis.vis.viewer_plugins.plugins.mouse_interaction import GRAB_ACC
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.options.sensors import RasterizerCameraOptions
+from deephunch.recorders.trajectory import TRAJECTORY_FORMAT, Trajectory
+from deephunch.utils.misc import tensor_to_array
+from deephunch.utils.video_encoder import VideoEncoder
+from deephunch.vis.keybindings import Key, KeyAction, Keybind, KeyMod, MouseButton
+from deephunch.vis.viewer_plugins.plugins.mouse_interaction import GRAB_ACC
 
 from ..conftest import IS_INTERACTIVE_VIEWER_AVAILABLE, SKIP_NO_IMGUI_BUNDLE, SKIP_NO_VIEWER, is_imgui_bundle_supported
 from ..utils.assertions import assert_allclose, assert_equal, rgb_array_to_png_bytes
@@ -299,7 +299,7 @@ def test_key_press(renderer_type, tmp_path, monkeypatch, renderer, png_snapshot)
     def get_save_filename(self, file_exts):
         return VIDEO_FILENAME if file_exts == ["mp4"] else IMAGE_FILENAME
 
-    monkeypatch.setattr("genesis.ext.pyrender.viewer.Viewer._get_save_filename", get_save_filename)
+    monkeypatch.setattr("deephunch.ext.pyrender.viewer.Viewer._get_save_filename", get_save_filename)
 
     # The encoding of a frame blocks until released, which must not hold up the simulation
     is_encoding, is_encoder_released = threading.Event(), threading.Event()
@@ -310,7 +310,7 @@ def test_key_press(renderer_type, tmp_path, monkeypatch, renderer, png_snapshot)
             is_encoder_released.wait()
             super().write(frame)
 
-    monkeypatch.setattr("genesis.ext.pyrender.viewer.VideoEncoder", BlockingVideoEncoder)
+    monkeypatch.setattr("deephunch.ext.pyrender.viewer.VideoEncoder", BlockingVideoEncoder)
 
     # Mock 'on_key_release' to determine whether requests have been processed
     n_key_releases = 0
@@ -322,7 +322,7 @@ def test_key_press(renderer_type, tmp_path, monkeypatch, renderer, png_snapshot)
         n_key_releases += 1
         return ret
 
-    monkeypatch.setattr("genesis.ext.pyrender.viewer.Viewer.on_key_release", on_key_release)
+    monkeypatch.setattr("deephunch.ext.pyrender.viewer.Viewer.on_key_release", on_key_release)
 
     # Create a scene
     scene = gs.Scene(
@@ -1001,9 +1001,9 @@ def test_thread_crash_reports_traceback():
     if run_in_thread:
         # Wait until the viewer thread has died, then check the traceback is preserved
         wait_for_viewer_events(pyrender_viewer, lambda: not pyrender_viewer.is_active)
-        with pytest.raises(gs.GenesisException) as exc_info:
+        with pytest.raises(gs.DeepHunchException) as exc_info:
             scene.step()
-        assert exc_info.type is gs.GenesisException
+        assert exc_info.type is gs.DeepHunchException
         assert isinstance(exc_info.value.__cause__, RuntimeError)
         assert "Deliberate viewer thread crash." in str(exc_info.value.__cause__)
     else:

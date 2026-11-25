@@ -2,7 +2,7 @@
 Entity Naming Tutorial
 ======================
 
-Demonstrates the Genesis entity naming system:
+Demonstrates the DeepHunch entity naming system:
 - Auto-generated names based on morph type + UID
 - User-specified custom names
 - Scene-level entity lookup APIs
@@ -10,7 +10,7 @@ Demonstrates the Genesis entity naming system:
 
 import argparse
 
-import genesis as gs
+import deephunch as gs
 
 
 def main():

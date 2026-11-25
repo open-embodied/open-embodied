@@ -4,7 +4,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-import genesis as gs
+import deephunch as gs
 
 
 def main():

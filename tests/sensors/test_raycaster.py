@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
-from genesis.utils.misc import tensor_to_array
-from genesis.vis.viewer_plugins.raycast import Raycaster
+import deephunch as gs
+from deephunch.utils.misc import tensor_to_array
+from deephunch.vis.viewer_plugins.raycast import Raycaster
 
 from ..utils.assertions import assert_allclose, assert_equal
 

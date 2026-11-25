@@ -3,8 +3,8 @@ import pytest
 
 import quadrants as qd
 
-import genesis as gs
-from genesis.engine.bvh import (
+import deephunch as gs
+from deephunch.engine.bvh import (
     BoxQuery,
     BVHLeaves,
     BVHPackedTrees,
@@ -16,7 +16,7 @@ from genesis.engine.bvh import (
     func_bvh_traverse,
     get_bvh_data,
 )
-from genesis.utils.misc import qd_to_numpy
+from deephunch.utils.misc import qd_to_numpy
 
 from ..utils.assertions import assert_equal
 

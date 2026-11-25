@@ -18,15 +18,15 @@ import trimesh
 from PIL import Image
 from scipy.spatial.transform import Rotation, Slerp
 
-import genesis as gs
-import genesis.utils.geom as gu
-import genesis.utils.mesh as mu
-from genesis.utils.image_exporter import FrameImageExporter, as_grayscale_image
-from genesis.utils.misc import tensor_to_array, unique_rows
-from genesis.utils.tools import RunningMean
-from genesis.utils.urdf import compose_inertial_properties
-from genesis.utils.warnings import warn_once
-from genesis.utils.watertighten import watertighten_mesh
+import deephunch as gs
+import deephunch.utils.geom as gu
+import deephunch.utils.mesh as mu
+from deephunch.utils.image_exporter import FrameImageExporter, as_grayscale_image
+from deephunch.utils.misc import tensor_to_array, unique_rows
+from deephunch.utils.tools import RunningMean
+from deephunch.utils.urdf import compose_inertial_properties
+from deephunch.utils.warnings import warn_once
+from deephunch.utils.watertighten import watertighten_mesh
 
 from ..conftest import TOL_DOUBLE
 from ..utils.assertions import assert_allclose, assert_equal
@@ -1321,9 +1321,9 @@ def test_running_mean():
     exponential_mean.update(4.0)
     exponential_mean.update(8.0)
     assert math.isclose(exponential_mean.value, 0.25 * 4.0 + 0.75 * 8.0)
-    with pytest.raises(gs.GenesisException, match="Exactly one of"):
+    with pytest.raises(gs.DeepHunchException, match="Exactly one of"):
         RunningMean(window=3, alpha=0.25)
-    with pytest.raises(gs.GenesisException, match="one sample at least"):
+    with pytest.raises(gs.DeepHunchException, match="one sample at least"):
         RunningMean(window=0)
 
 
@@ -1332,15 +1332,15 @@ def test_running_mean():
 def test_logger_prints_once_with_root_logging(backend):
     script = (
         "import logging; logging.basicConfig(level=logging.INFO); "
-        "import genesis as gs; gs.init(backend=gs.cpu); gs.logger.warning('Genesis warning')"
+        "import deephunch as gs; gs.init(backend=gs.cpu); gs.logger.warning('DeepHunch warning')"
     )
     proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, encoding="utf-8")
     assert proc.returncode == 0, proc.stderr
-    assert (proc.stdout + proc.stderr).count("Genesis warning") == 1
+    assert (proc.stdout + proc.stderr).count("DeepHunch warning") == 1
 
 
 def _redirect_libc_stderr_child(args: list[str]):
-    """Child process: init genesis, then spawn a process."""
+    """Child process: init deephunch, then spawn a process."""
     gs.init(backend=gs.cpu, logging_level="info")
     print(subprocess.check_output([sys.executable, "-c", "print(42)"], text=True), end="")
     sys.exit(RET_SUCCESS)
@@ -1383,8 +1383,8 @@ def test_logger_raw_theme_plain_text(capsys):
     out = capsys.readouterr().out
     assert out.isascii() and "\x1b" not in out
     lines = out.splitlines()
-    assert all(re.match(r"\[Genesis \d{2}:\d{2}:\d{2}( [A-Z]+)?\] ", line) for line in lines)
-    assert any(re.fullmatch(r"\[Genesis \d{2}:\d{2}:\d{2} WARNING\] Watch this\.", line) for line in lines)
+    assert all(re.match(r"\[DeepHunch \d{2}:\d{2}:\d{2}( [A-Z]+)?\] ", line) for line in lines)
+    assert any(re.fullmatch(r"\[DeepHunch \d{2}:\d{2}:\d{2} WARNING\] Watch this\.", line) for line in lines)
     assert any(re.search(r"\] Adding <gs\.engine\.entities\.RigidEntity> 'box'\. idx: 0, ", line) for line in lines)
 
 
@@ -1403,7 +1403,7 @@ def test_warn_once():
 
 
 def test_build_guard_requires_buildable_mixin():
-    with pytest.raises(gs.GenesisException, match="only a subclass of BuildableMixin"):
+    with pytest.raises(gs.DeepHunchException, match="only a subclass of BuildableMixin"):
 
         class Unbuildable:
             @gs.assert_built

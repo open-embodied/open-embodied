@@ -11,7 +11,7 @@ import torch
 
 import quadrants as qd
 
-import genesis as gs
+import deephunch as gs
 
 from ..utils.assets import get_git_commit_timestamp, get_hf_dataset
 from ..utils.misc import pprint_oneline
@@ -436,7 +436,7 @@ def make_double_smplx(n_envs, solver=None, gjk=None, **scene_kwargs):
     # factorizations exercise their uncapped paths.
     STEP_DT = 0.005
     INIT_POSS = ((0.0, -0.5, 1.4), (0.0, 0.5, 1.4))  # pelvis dropped 1.4 m above the plane, offset in y
-    INIT_EULER = (90.0, 0.0, 0.0)  # SMPL-X canonical frame is Y-up; rotate to stand upright in Genesis (Z-up)
+    INIT_EULER = (90.0, 0.0, 0.0)  # SMPL-X canonical frame is Y-up; rotate to stand upright in DeepHunch (Z-up)
     MAX_FORCE = 500.0
 
     scene = gs.Scene(
@@ -622,7 +622,7 @@ def make_dex_hand(n_envs, solver=None, gjk=None, **scene_kwargs):
     ]
 
     # Note: screenshots on effect of coacd_options on how the drill and table look
-    # at https://github.com/Genesis-Embodied-AI/Genesis/pull/2500#discussion_r2900243286
+    # at https://github.com/DeepHunch-Embodied-AI/DeepHunch/pull/2500#discussion_r2900243286
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
             dt=STEP_DT,

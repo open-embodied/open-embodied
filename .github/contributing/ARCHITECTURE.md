@@ -1,10 +1,10 @@
-# Genesis Architecture
+# DeepHunch Architecture
 
 ## Project Structure
 
 ```
-Genesis/
-├── genesis/                    # Main source code
+DeepHunch/
+├── deephunch/                    # Main source code
 │   ├── __init__.py            # Entry point, gs.init(), global state
 │   ├── engine/                # Core simulation engine
 │   │   ├── scene.py           # Scene class - main API entry point
@@ -27,7 +27,7 @@ Genesis/
 │   └── utils/                 # Utilities (mesh, geometry, etc.)
 ├── tests/                     # Test files
 ├── examples/                  # Example scripts
-└── genesis/assets/            # Built-in meshes, URDFs, textures
+└── deephunch/assets/            # Built-in meshes, URDFs, textures
 ```
 
 ## Core Components Flow
@@ -52,11 +52,11 @@ Entities are physical objects in the simulation:
 | `DroneEntity` | Rigid | Quadcopters with aerodynamics |
 | `ToolEntity` | Tool | Cutting/interaction tools |
 
-Location: `genesis/engine/entities/`
+Location: `deephunch/engine/entities/`
 
 ### Descriptions
 
-An entity is created from a description: a dataclass holding everything its solver simulates it with, defined beside the entity that consumes it (`genesis/engine/entities/rigid_entity/description.py` for rigid and kinematic entities). Creation is two steps, each owned by the class it concerns:
+An entity is created from a description: a dataclass holding everything its solver simulates it with, defined beside the entity that consumes it (`deephunch/engine/entities/rigid_entity/description.py` for rigid and kinematic entities). Creation is two steps, each owned by the class it concerns:
 
 - the description class resolves the morphs, material and surface into a description (`RigidEntityDescription.resolve`), which is where assets are read and post-processed;
 - the entity class builds itself from the description alone (`RigidEntity.__init__`), so a description loaded from a file and one resolved from assets take the same path.
@@ -78,7 +78,7 @@ gs.morphs.URDF(file="path/to/robot.urdf", fixed=True)
 gs.morphs.MJCF(file="path/to/robot.xml")
 ```
 
-Location: `genesis/options/morphs.py`
+Location: `deephunch/options/morphs.py`
 
 ## Materials
 
@@ -91,7 +91,7 @@ gs.materials.SPH.Liquid(sampler="pbs")
 gs.materials.PBD.Cloth(stretch_compliance=0.0)
 ```
 
-Location: `genesis/engine/materials/`
+Location: `deephunch/engine/materials/`
 
 ## Entity spec
 
@@ -119,7 +119,7 @@ scene.add_entity(
 )
 ```
 
-An entity spec is frozen: its fields are fixed at construction, and `select` and its setters alone record into `patches` what is set on parts of the entity. Each kind declares the selectors it admits, from the coarsest level to the finest, and the patches set on them (`_selector_types`, `_patch_types`). `select` returns a view (`LinkSelection`, `GeomSelection`, `VertexSelection`) whose setters record a `genesis.options.patches.Patch`, the selectors and the patch, in call order, and a scene file stores those patches. The entity holds a frozen copy of its spec with its name recorded into it, and its description holds that copy next to what the resolution derives.
+An entity spec is frozen: its fields are fixed at construction, and `select` and its setters alone record into `patches` what is set on parts of the entity. Each kind declares the selectors it admits, from the coarsest level to the finest, and the patches set on them (`_selector_types`, `_patch_types`). `select` returns a view (`LinkSelection`, `GeomSelection`, `VertexSelection`) whose setters record a `deephunch.options.patches.Patch`, the selectors and the patch, in call order, and a scene file stores those patches. The entity holds a frozen copy of its spec with its name recorded into it, and its description holds that copy next to what the resolution derives.
 
 The rigid description resolves the patches against the parsed geoms of each morph before post-processing splits or fuses them, so an ordinal counts geoms as the asset states them and geoms of different values never fuse. The FEM entity resolves the patches of vertices, and its solver applies the fixed ones through `set_vertex_constraints` once the scene is built. `gs.entities.Rigid.select` states the precedence of patches and how nested selections resolve.
 
@@ -129,7 +129,7 @@ arm_spec.select(gs.indices.Link.named("arm2")).set_friction(1.2)
 scene.add_entity(spec=arm_spec)
 ```
 
-Location: `genesis/options/entities.py`, `genesis/options/indices.py`
+Location: `deephunch/options/entities.py`, `deephunch/options/indices.py`
 
 ## Solvers
 
@@ -141,14 +141,14 @@ Location: `genesis/options/entities.py`, `genesis/options/indices.py`
 | FEM | `gs.options.FEMOptions` | Finite element deformation |
 | PBD | `gs.options.PBDOptions` | Fast soft body simulation |
 
-Location: `genesis/engine/solvers/`
+Location: `deephunch/engine/solvers/`
 
 ## Key Files Reference
 
 | File | Purpose |
 |------|---------|
-| `genesis/__init__.py` | Package entry, `gs.init()`, global state |
-| `genesis/engine/scene.py` | `Scene` class - main user interface |
-| `genesis/engine/simulator.py` | `Simulator` - manages all solvers |
-| `genesis/options/morphs.py` | Shape/geometry definitions |
-| `genesis/options/solvers.py` | Solver option classes |
+| `deephunch/__init__.py` | Package entry, `gs.init()`, global state |
+| `deephunch/engine/scene.py` | `Scene` class - main user interface |
+| `deephunch/engine/simulator.py` | `Simulator` - manages all solvers |
+| `deephunch/options/morphs.py` | Shape/geometry definitions |
+| `deephunch/options/solvers.py` | Solver option classes |

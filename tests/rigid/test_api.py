@@ -5,9 +5,9 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.utils.misc import qd_to_numpy, qd_to_torch, tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.utils.misc import qd_to_numpy, qd_to_torch, tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 
@@ -523,13 +523,13 @@ def test_batched_info(batch_links_info, batch_joints_info, batch_dofs_info, tol)
         # Nothing is held per environment, so naming one is rejected rather than answered with the shared value, by
         # every accessor of link info alike.
         for accessor in (gs_s.get_links_mass, gs_s.get_links_COM, gs_s.get_links_inertia, gs_s.get_links_invweight):
-            with pytest.raises(gs.GenesisException, match="cannot be specified for non-batched links info"):
+            with pytest.raises(gs.DeepHunchException, match="cannot be specified for non-batched links info"):
                 accessor(envs_idx=1)
         for setter in (gs_s.set_links_mass, gs_s.set_links_COM, gs_s.set_links_inertia):
-            with pytest.raises(gs.GenesisException, match="cannot be specified for non-batched links info"):
+            with pytest.raises(gs.DeepHunchException, match="cannot be specified for non-batched links info"):
                 setter(gs_s.get_links_mass()[1] if setter is gs_s.set_links_mass else 0.0, envs_idx=1)
         # A shared mass has nowhere to put a value of its own per environment.
-        with pytest.raises(gs.GenesisException, match="batch_links_info"):
+        with pytest.raises(gs.DeepHunchException, match="batch_links_info"):
             franka.links[1].set_mass((1.0, 2.0))
         # One value stands for the whole batch, and the weights it settles are recomputed from it.
         link = franka.links[1]
@@ -746,17 +746,17 @@ def test_set_root_pose(batch_fixed_verts, relative, show_viewer, tol):
     # Make sure that it is not possible to end up in an inconsistent state for fixed geometries. These place entities
     # at absolute world positions, so they bypass the pose offset (relative=False).
     pos_delta = np.random.rand(2, 3)
-    with nullcontext() if batch_fixed_verts else pytest.raises(gs.GenesisException):
+    with nullcontext() if batch_fixed_verts else pytest.raises(gs.DeepHunchException):
         robot.set_pos(pos_delta, relative=False)
-    with nullcontext() if batch_fixed_verts else pytest.raises(gs.GenesisException):
+    with nullcontext() if batch_fixed_verts else pytest.raises(gs.DeepHunchException):
         robot.set_pos(pos_delta[[0]], envs_idx=[0], relative=False)
     cube.set_pos(pos_delta[[0]] + (0.0, 0.0, 0.16), envs_idx=[0], relative=False)
     cube.set_pos(pos_delta[[1]] + (0.0, 0.0, 0.11), envs_idx=1, relative=False)
     sphere.set_pos(np.tile(pos_delta[[0]], (2, 1)) + 1.0, relative=False)
     quat_delta = np.random.rand(2, 4)
-    with nullcontext() if batch_fixed_verts else pytest.raises(gs.GenesisException):
+    with nullcontext() if batch_fixed_verts else pytest.raises(gs.DeepHunchException):
         robot.set_quat(quat_delta, relative=False)
-    with nullcontext() if batch_fixed_verts else pytest.raises(gs.GenesisException):
+    with nullcontext() if batch_fixed_verts else pytest.raises(gs.DeepHunchException):
         robot.set_quat(quat_delta[[0]], envs_idx=[0], relative=False)
     cube.set_quat(quat_delta, relative=False)
 
@@ -977,7 +977,7 @@ def test_inertial_property_setters(sliding_ball_pair, xml_path, implicit_inertia
     # Bringing a whole entity to a mass holds however far apart its environments start, and a per-link set takes one
     # value per environment and nothing else.
     het_link = next(link for link in het_obj.links if not link.is_fixed)
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         het_link.set_mass((1.0, 2.0))
     het_obj.set_mass(1.0)
     assert_allclose(het_obj.get_mass(), 1.0, tol=tol)
@@ -1079,23 +1079,23 @@ def test_inertial_property_setters(sliding_ball_pair, xml_path, implicit_inertia
     # A body the build anchored on its own center of mass and principal axes has no room for either write, since the
     # frame that anchoring gave it is what the solver goes on to rely on. A model file can decline the anchoring,
     # which is what the body above does; a primitive shape cannot.
-    with pytest.raises(gs.GenesisException, match="align=False"):
+    with pytest.raises(gs.DeepHunchException, match="align=False"):
         solver.set_links_COM([OFFSET, 0.0, 0.0], links_idx=free_bodies.links[0].idx)
-    with pytest.raises(gs.GenesisException, match="not supported yet"):
+    with pytest.raises(gs.DeepHunchException, match="not supported yet"):
         solver.set_links_inertia(SKEWED_INERTIA, links_idx=het_link.idx)
     # The anchor covers fixed children too, so the setters hold their center of mass and inertia like the root's. A mass
     # written on one link alone moves the anchor, so the setter rejects it. A mass set on the whole entity keeps the
     # anchor and the mass ratios.
     root, child = chain.links
-    with pytest.raises(gs.GenesisException, match="align=False"):
+    with pytest.raises(gs.DeepHunchException, match="align=False"):
         child.set_COM([OFFSET, 0.0, 0.0])
-    with pytest.raises(gs.GenesisException, match="align=False"):
+    with pytest.raises(gs.DeepHunchException, match="align=False"):
         child.set_inertia(SKEWED_INERTIA)
-    with pytest.raises(gs.GenesisException, match="align=False"):
+    with pytest.raises(gs.DeepHunchException, match="align=False"):
         child.set_mass(1.0)
-    with pytest.raises(gs.GenesisException, match="align=False"):
+    with pytest.raises(gs.DeepHunchException, match="align=False"):
         root.set_mass(1.0)
-    with pytest.raises(gs.GenesisException, match="align=False"):
+    with pytest.raises(gs.DeepHunchException, match="align=False"):
         chain.set_links_mass([1.0, 1.0])
     chain.set_mass(2.0)
     assert_allclose(chain.get_links_mass(), [[1.25, 0.75]] * 4, tol=tol)

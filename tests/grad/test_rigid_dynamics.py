@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
+import deephunch as gs
 
 from ..utils.assertions import assert_allclose
 from .utils import assert_grad_matches_fd, make_diff_scene_pair

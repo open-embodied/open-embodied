@@ -4,9 +4,9 @@ import torch
 
 import trimesh
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.utils.misc import tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.utils.misc import tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 from ..utils.assets import get_hf_dataset
@@ -481,7 +481,7 @@ def test_fluid_emitter(n_envs, material_type, show_viewer):
     assert_equal(box.get_particles_pos(), box_pos)
 
     for droplet_size in (0.0, float("nan"), float("inf")):
-        with pytest.raises(gs.GenesisException):
+        with pytest.raises(gs.DeepHunchException):
             emitter.emit(droplet_shape="omni", droplet_size=droplet_size)
 
     for i in range(5):
@@ -520,7 +520,7 @@ def test_sap_rigid_rigid_hydroelastic_contact(batch_links_info, show_viewer):
         scene = gs.Scene(coupler_options=gs.options.SAPCouplerOptions(), show_viewer=False)
         for morph in ground_morphs:
             scene.add_entity(morph)
-        with pytest.raises(gs.GenesisException, match="single fixed plane facing up"):
+        with pytest.raises(gs.DeepHunchException, match="single fixed plane facing up"):
             scene.build()
 
     # A scene of fixed bodies alone, without any degree of freedom, has nothing to solve and steps

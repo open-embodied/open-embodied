@@ -2,8 +2,8 @@ import os
 
 import numpy as np
 
-import genesis as gs
-from genesis.vis.keybindings import Key, KeyAction, Keybind
+import deephunch as gs
+from deephunch.vis.keybindings import Key, KeyAction, Keybind
 
 
 class DroneController:
@@ -33,7 +33,7 @@ class DroneController:
 
 
 def main():
-    # Initialize Genesis
+    # Initialize DeepHunch
     gs.init(backend=gs.cpu)
 
     scene = gs.Scene(

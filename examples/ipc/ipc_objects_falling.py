@@ -2,7 +2,7 @@
 IPC Cloth Simulation Example
 
 This example demonstrates cloth simulation using IPC (Incremental Potential Contact)
-with Genesis. The cloth is simulated using NeoHookeanShell constitution.
+with DeepHunch. The cloth is simulated using NeoHookeanShell constitution.
 """
 
 import argparse
@@ -10,7 +10,7 @@ import os
 
 from huggingface_hub import snapshot_download
 
-import genesis as gs
+import deephunch as gs
 
 
 def main():
@@ -26,7 +26,7 @@ def main():
         ),
         coupler_options=gs.options.IPCCouplerOptions(
             contact_d_hat=0.01,  # Contact barrier distance (10mm) - must be appropriate for mesh resolution
-            two_way_coupling=True,  # Enable two-way coupling (forces from IPC to Genesis rigid bodies)
+            two_way_coupling=True,  # Enable two-way coupling (forces from IPC to DeepHunch rigid bodies)
         ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(2.5, 2.5, 1.5),
@@ -43,7 +43,7 @@ def main():
     # The built-in cloth.obj is too dense for IPC's contact detection
     asset_path = snapshot_download(
         repo_type="dataset",
-        repo_id="Genesis-Intelligence/assets",
+        repo_id="DeepHunch-Intelligence/assets",
         revision="8aa8fcd60500b9f3a36c356080224bdb1be9ee59",
         allow_patterns="IPC/grid20x20.obj",
         max_workers=1,

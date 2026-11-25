@@ -3,8 +3,8 @@ import math
 import torch
 from tensordict import TensorDict
 
-import genesis as gs
-from genesis.utils.geom import quat_to_xyz, transform_by_quat, inv_quat, transform_quat_by_quat
+import deephunch as gs
+from deephunch.utils.geom import quat_to_xyz, transform_by_quat, inv_quat, transform_quat_by_quat
 
 
 def gs_rand(lower, upper, batch_shape):

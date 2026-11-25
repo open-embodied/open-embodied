@@ -1,6 +1,6 @@
 # Drone Examples
 
-This directory contains examples of drone simulations using the Genesis framework.
+This directory contains examples of drone simulations using the DeepHunch framework.
 
 ## Available Examples
 
@@ -75,7 +75,7 @@ python hover_eval.py -e drone-hovering --ckpt 300 --record
 **Note**: If you experience slow performance or encounter other issues
 during evaluation, try removing the `--record` option.
 
-For the latest updates, detailed documentation, and additional resources, visit this repository: [GenesisDroneEnv](https://github.com/KafuuChikai/GenesisDroneEnv).
+For the latest updates, detailed documentation, and additional resources, visit this repository: [DeepHunchDroneEnv](https://github.com/KafuuChikai/DeepHunchDroneEnv).
 
 ### 4. Quadcopter Controller (`quadcopter_controller.py` & `fly_route.py`)
 A PID-based controller to provide stable point-to-point flight without controlling each rotor. Parameters

@@ -1,5 +1,5 @@
 """
-Load the Lightwheel Kitchen USD assets in Genesis.
+Load the Lightwheel Kitchen USD assets in DeepHunch.
 
 Usage
 -----
@@ -17,9 +17,9 @@ import os
 
 from huggingface_hub import snapshot_download
 
-import genesis as gs
-from genesis.utils.misc import tensor_to_array
-from genesis.vis.keybindings import Key, KeyAction, Keybind
+import deephunch as gs
+from deephunch.utils.misc import tensor_to_array
+from deephunch.vis.keybindings import Key, KeyAction, Keybind
 
 SAMPLE_ASSETS = {
     "dishwasher": ("Lightwheel_Kitchen/Dishwasher054/Dishwasher054.usd", ["Lightwheel_Kitchen/Dishwasher054/*"]),
@@ -74,7 +74,7 @@ def main():
 
     asset_path = snapshot_download(
         repo_type="dataset",
-        repo_id="Genesis-Intelligence/assets",
+        repo_id="DeepHunch-Intelligence/assets",
         revision="c3d4f971ac7da1ca2257adc7663b3aaea82c9a32",
         allow_patterns=patterns,
     )

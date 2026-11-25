@@ -13,7 +13,7 @@ except (metadata.PackageNotFoundError, ImportError) as e:
 from rsl_rl.runners import OnPolicyRunner
 from behavior_cloning import BehaviorCloning
 
-import genesis as gs
+import deephunch as gs
 
 from grasp_env import GraspEnv
 

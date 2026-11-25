@@ -1,6 +1,6 @@
 import pytest
 
-import genesis as gs
+import deephunch as gs
 
 from ..utils.assertions import rgb_array_to_png_bytes
 from .conftest import RENDERER_TYPE

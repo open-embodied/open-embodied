@@ -95,7 +95,7 @@ class NvidiaBackend(GpuBackend):
     def get_per_process_vram_mib(self) -> dict[int, int]:
         usage: dict[int, int] = {}
         for handle in self._handles:
-            # Genesis test workers use the GPU both for compute (Quadrants) and for rendering (EGL/OpenGL), which
+            # DeepHunch test workers use the GPU both for compute (Quadrants) and for rendering (EGL/OpenGL), which
             # the driver reports as two separate process lists. usedGpuMemory is the process' total memory on the
             # device in either list, so a process doing both appears in both with the same footprint: take it once
             # per device (max), then sum across devices for genuine multi-GPU use.

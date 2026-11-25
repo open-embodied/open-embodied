@@ -2,9 +2,9 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.utils.misc import gaussian_crosstalk_kernel, tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.utils.misc import gaussian_crosstalk_kernel, tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 
@@ -910,7 +910,7 @@ def test_filtered_contact_survives_prefilter_cap(show_viewer, monkeypatch, n_env
     # list and starve an allowed contact. Shrink the cap to 1 so a single filtered contact would exhaust it, then
     # filter the sphere (whose contact is enumerated before the ground manifold). The allowed ground contact must
     # still reach the bottom probe -- with the filter applied too late, both probes read zero.
-    monkeypatch.setattr("genesis.engine.sensors.kinematic_tactile._MAX_CONTACTS_PER_SENSOR", 1)
+    monkeypatch.setattr("deephunch.engine.sensors.kinematic_tactile._MAX_CONTACTS_PER_SENSOR", 1)
     BOX_SIZE = 0.2
     SPHERE_RADIUS = 0.1
     PENETRATION = 0.02

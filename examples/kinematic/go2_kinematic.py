@@ -11,7 +11,7 @@ import argparse
 import math
 import os
 
-import genesis as gs
+import deephunch as gs
 
 
 AMPLITUDE = 0.3

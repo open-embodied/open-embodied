@@ -6,8 +6,8 @@ import torch
 
 from huggingface_hub import snapshot_download
 
-import genesis as gs
-import genesis.utils.geom as gu
+import deephunch as gs
+import deephunch.utils.geom as gu
 
 
 def main():
@@ -46,7 +46,7 @@ def main():
     )
     asset_path = snapshot_download(
         repo_type="dataset",
-        repo_id="Genesis-Intelligence/assets",
+        repo_id="DeepHunch-Intelligence/assets",
         revision="4d96c3512df4421d4dd3d626055d0d1ebdfdd7cc",
         allow_patterns="cube8.obj",
         max_workers=1,

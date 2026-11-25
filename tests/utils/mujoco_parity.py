@@ -9,10 +9,10 @@ import pytest
 import scipy.optimize
 import scipy.sparse.csgraph
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.engine.solvers.rigid.constraint.solver import func_solve_body
-from genesis.utils.misc import qd_to_numpy, tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.engine.solvers.rigid.constraint.solver import func_solve_body
+from deephunch.utils.misc import qd_to_numpy, tensor_to_array
 
 from .assertions import assert_allclose
 
@@ -184,7 +184,7 @@ def _get_model_mappings(
 
 
 def init_paired_simulators(gs_sim, mj_sim, qpos=None, qvel=None):
-    """Initialize the Genesis simulator and reset MuJoCo onto its exact state, ready for a step-by-step comparison."""
+    """Initialize the DeepHunch simulator and reset MuJoCo onto its exact state, ready for a step-by-step comparison."""
     gs_sim.scene.reset()
     if qpos is not None:
         gs_sim.rigid_solver.set_qpos(qpos)
@@ -213,7 +213,7 @@ def init_paired_simulators(gs_sim, mj_sim, qpos=None, qvel=None):
 
 
 def set_paired_inertial_properties(gs_sim, mj_sim, *, armature_ratio, mass_ratio, inertia_ratio, com_offset):
-    """Apply the same inertial change to both simulators, through the runtime setters on the Genesis side and through
+    """Apply the same inertial change to both simulators, through the runtime setters on the DeepHunch side and through
     the model fields and 'mj_setConst' on the MuJoCo side.
 
     Every DOF armature and every body mass and inertia are scaled by the given ratios, and the center of mass of every
@@ -300,8 +300,8 @@ def align_mujoco_invweight0(model):
 
     That rule of 'mj_setConst' is the mean diagonal of J M^-1 J^T at the neutral configuration, over the translational
     and the rotational rows of a body, and over the DOFs a joint moves together. MuJoCo leaves it aside for a body it
-    flags as simple (see the FIXME in genesis.utils.mjcf), so aligning the model on it has both engines simulate the
-    weights Genesis derives.
+    flags as simple (see the FIXME in deephunch.utils.mjcf), so aligning the model on it has both engines simulate the
+    weights DeepHunch derives.
     """
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
@@ -331,10 +331,10 @@ def check_mujoco_model_consistency(
     *,
     tol: float,
 ):
-    # Delay import to enable run benchmarks for old Genesis versions that do not have this method
-    from genesis.engine.solvers.rigid.rigid_solver import _sanitize_sol_params
+    # Delay import to enable run benchmarks for old DeepHunch versions that do not have this method
+    from deephunch.engine.solvers.rigid.rigid_solver import _sanitize_sol_params
 
-    # Get mapping between Mujoco and Genesis
+    # Get mapping between Mujoco and DeepHunch
     gs_maps, mj_maps = _get_model_mappings(gs_sim, mj_sim, joints_name, bodies_name)
     gs_bodies_idx, gs_joints_idx, gs_q_idx, gs_dofs_idx, gs_geoms_idx, gs_motors_idx = gs_maps
     mj_bodies_idx, mj_joints_idx, mj_qs_idx, mj_dofs_idx, mj_geoms_idx, mj_motors_idx = mj_maps
@@ -436,7 +436,7 @@ def check_mujoco_model_consistency(
     mj_dof_armature = mj_sim.model.dof_armature
     assert_allclose(gs_dof_armature[gs_dofs_idx], mj_dof_armature[mj_dofs_idx], tol=tol)
 
-    # TODO: 1 stiffness per joint in Mujoco, 1 stiffness per DoF in Genesis
+    # TODO: 1 stiffness per joint in Mujoco, 1 stiffness per DoF in DeepHunch
     gs_dof_stiffness = gs_sim.rigid_solver.dyn_info.dofs.stiffness.to_numpy()
     mj_dof_stiffness = mj_sim.model.jnt_stiffness
     if all(joint.n_dofs == 1 for joint in gs_sim.rigid_solver.joints):
@@ -523,7 +523,7 @@ def _compute_efc_tolerances(mj_sim, tol):
         (mj_sim.model.geom_solref[:, 0], mj_sim.model.jnt_solref[:, 0], mj_sim.model.eq_solref[:, 0])
     )
     # MuJoCo clamps a positive time constant to at least twice the timestep at runtime, so the sub-timestep
-    # epsilon defaults Genesis's parser authors for hard constraints amplify no further than that.
+    # epsilon defaults DeepHunch's parser authors for hard constraints amplify no further than that.
     timeconst_min = max(solref_timeconst[solref_timeconst > 0.0].min(), 2.0 * mj_sim.model.opt.timestep)
     efc_atol = tol / timeconst_min**2
     return efc_atol, efc_atol * mj_sim.model.opt.timestep
@@ -575,7 +575,7 @@ def check_mujoco_data_consistency(
     tol: float,
     ignore_constraints: bool = False,
 ):
-    # Get mapping between Mujoco and Genesis
+    # Get mapping between Mujoco and DeepHunch
     gs_maps, mj_maps = _get_model_mappings(gs_sim, mj_sim, joints_name, bodies_name)
     gs_bodies_idx, _, gs_q_idx, gs_dofs_idx, _, _ = gs_maps
     mj_bodies_idx, _, mj_qs_idx, mj_dofs_idx, _, _ = mj_maps
@@ -659,8 +659,8 @@ def check_mujoco_data_consistency(
         mj_efc_force = mj_sim.data.efc_force
         assert_allclose(gs_efc_force[gs_sidx], mj_efc_force[mj_sidx], atol=efc_atol, rtol=tol)
 
-        # Solver statistics of the last iteration, per island (both engines solve per island, see build_genesis_sim),
-        # matched through the MuJoCo island of the island's first dof. A Genesis island without any constraint has no
+        # Solver statistics of the last iteration, per island (both engines solve per island, see build_deephunch_sim),
+        # matched through the MuJoCo island of the island's first dof. A DeepHunch island without any constraint has no
         # MuJoCo counterpart (its dofs sit outside every MuJoCo island) and is skipped.
         gs_constraint_solver = gs_sim.rigid_solver.constraint_solver
         gs_island_state = gs_constraint_solver.constraint_state.island
@@ -692,7 +692,7 @@ def check_mujoco_data_consistency(
             # In practice, this only makes a difference if frictionloss is enabled. Middle-zone (slipping) elliptic
             # cone rows are excluded from the per-row quadratic (handled as a coupled block) yet count as active in
             # Mujoco's stat, which engages a cone as a whole; counting every row of a cone that carries any force
-            # translates Genesis's convention into Mujoco's.
+            # translates DeepHunch's convention into Mujoco's.
             gs_counted = gs_constraint_solver.active.to_numpy()[:gs_n_constraints, 0].copy()
             gs_n_cone = gs_constraint_solver.n_constraints_cone.to_numpy()[0]
             if gs_n_cone:
@@ -753,7 +753,7 @@ def check_mujoco_data_consistency(
         gs_qacc_pre = gs_qacc_smooth
     mj_qacc_pre = mj_sim.data.qacc
     # Midpoint-integrated DOFs hold the realized acceleration (qvel_new - qvel_old) / h in both engines, which
-    # Genesis mirrors in dofs.acc; the smooth+constraint acceleration is only observable on the remaining DOFs.
+    # DeepHunch mirrors in dofs.acc; the smooth+constraint acceleration is only observable on the remaining DOFs.
     midpoint_mask = get_mujoco_midpoint_dofs_mask(mj_sim)[mj_dofs_idx]
     gs_qacc_post = gs_sim.rigid_solver.dyn_state.dofs.acc.to_numpy()[:, 0]
     # The constraint solve rounds every acceleration at the scale of the largest one it is solved jointly with: the
@@ -841,7 +841,7 @@ def check_mujoco_data_consistency(
 def simulate_and_check_mujoco_consistency(
     gs_sim, mj_sim, qpos=None, qvel=None, *, tol, num_steps, ignore_constraints=False
 ):
-    # Get mapping between Mujoco and Genesis
+    # Get mapping between Mujoco and DeepHunch
     gs_maps, mj_maps = _get_model_mappings(gs_sim, mj_sim)
     gs_bodies_idx, _, _, gs_dofs_idx, _, _ = gs_maps
     mj_bodies_idx, _, mj_qs_idx, mj_dofs_idx, _, _ = mj_maps
@@ -869,7 +869,7 @@ def simulate_and_check_mujoco_consistency(
     # amplifies the rounding of its position and velocity inputs by the inverse squared constraint time constant
     # (see _compute_efc_tolerances), which moves a near-boundary row's activation threshold by more than its margin.
     # Substituting MuJoCo's double-precision reference acceleration right before each solve makes both engines
-    # minimize the same problem, keeping the solver comparison exact; the row pairing still validates Genesis's own
+    # minimize the same problem, keeping the solver comparison exact; the row pairing still validates DeepHunch's own
     # assembled values beforehand. MuJoCo steps first in the loop below, so its rows describe the same state.
     constraint_solver = gs_sim.rigid_solver.constraint_solver
 
@@ -886,7 +886,7 @@ def simulate_and_check_mujoco_consistency(
 
     with pytest.MonkeyPatch.context() as mp:
         if gs.np_float == np.float32 and not ignore_constraints:
-            mp.setattr("genesis.engine.solvers.rigid.rigid_solver.func_solve_body", solve_on_mujoco_aref)
+            mp.setattr("deephunch.engine.solvers.rigid.rigid_solver.func_solve_body", solve_on_mujoco_aref)
 
         for i in range(num_steps):
             # Make sure that all "dynamic" quantities are matching before stepping
@@ -894,7 +894,7 @@ def simulate_and_check_mujoco_consistency(
                 gs_sim, mj_sim, qvel_prev=qvel_prev, tol=tol, ignore_constraints=ignore_constraints
             )
 
-            # Keep Mujoco and Genesis simulation in sync to avoid drift over time
+            # Keep Mujoco and DeepHunch simulation in sync to avoid drift over time
             mj_sim.data.qpos[mj_qs_idx] = gs_sim.rigid_solver.qpos.to_numpy()[:, 0]
             mj_sim.data.qvel[mj_dofs_idx] = gs_sim.rigid_solver.dyn_state.dofs.vel.to_numpy()[:, 0]
             mj_sim.data.qacc_warmstart[mj_dofs_idx] = gs_sim.rigid_solver.constraint_solver.qacc_ws.to_numpy()[:, 0]
@@ -903,7 +903,7 @@ def simulate_and_check_mujoco_consistency(
             # Backup current velocity
             qvel_prev = gs_sim.rigid_solver.dyn_state.dofs.vel.to_numpy()[:, 0]
 
-            # Do a single simulation step (eventually with substeps for Genesis)
+            # Do a single simulation step (eventually with substeps for DeepHunch)
             mujoco.mj_step(mj_sim.model, mj_sim.data)
             gs_sim.scene.step()
             # if gs_sim.scene.visualizer:

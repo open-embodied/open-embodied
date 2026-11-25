@@ -7,11 +7,11 @@ import pytest
 import torch
 from PIL import Image
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.ext import urdfpy
-from genesis.utils import urdf as uu
-from genesis.utils.misc import get_assets_dir, qd_to_numpy, tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.ext import urdfpy
+from deephunch.utils import urdf as uu
+from deephunch.utils.misc import get_assets_dir, qd_to_numpy, tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 from ..utils.assets import get_hf_dataset
@@ -329,7 +329,7 @@ def test_parsing_inertia_defaults(
             align=False,
         ),
     )
-    # The asset states no inertial for its base link. Attachment makes that base movable, so Genesis computes its
+    # The asset states no inertial for its base link. Attachment makes that base movable, so DeepHunch computes its
     # mass from geometry at robot density, the same value the free-standing copy gets.
     carrier = scene.add_entity(
         morph=gs.morphs.Box(
@@ -544,7 +544,7 @@ def test_parsing_inertia_defaults(
     # collision and visual geometry feed the computation.
     assert_allclose(mounted_arm.base_link.get_mass(), free_arm.base_link.get_mass(), tol=gs.EPS)
     assert_allclose(mounted_drawn.get_mass(), free_drawn.get_mass(), tol=gs.EPS)
-    # Genesis applies the robot density because the asset is articulated. The convex hull of the authored sphere
+    # DeepHunch applies the robot density because the asset is articulated. The convex hull of the authored sphere
     # loses a little volume, so the measured mass lands slightly below the closed form.
     assert_allclose(mounted_arm.base_link.get_mass(), 1500.0 * 4.0 / 3.0 * np.pi * 0.06**3, rtol=0.1)
 
@@ -839,7 +839,7 @@ def test_default_armature(xml_path, trees_and_slider_mjcf, tol):
     # The default reaches its own tree alone: the other trees of the entity keep the inverse weights they were built with.
     assert (robot_trees.get_dofs_invweight()[:, 6] < robot_trees_reference.get_dofs_invweight()[:, 6]).all()
     assert_equal(robot_trees.get_dofs_invweight()[:, 7:], robot_trees_reference.get_dofs_invweight()[:, 7:])
-    # The slider is weighed like every other body (see the FIXME in genesis.utils.mjcf): 1 / (mass + armature) for its
+    # The slider is weighed like every other body (see the FIXME in deephunch.utils.mjcf): 1 / (mass + armature) for its
     # dof, a third of it for the translation of the link and none for its rotation.
     slider_invweight = 1.0 / (1.0 + 0.3)
     assert_allclose(robot_trees.get_dofs_invweight()[:, 14], slider_invweight, tol=tol)
@@ -1403,7 +1403,7 @@ def test_align_mixed_mass_raises():
             show_viewer=False,
             show_FPS=False,
         )
-        with pytest.raises(gs.GenesisException, match="geometry-estimated link masses"):
+        with pytest.raises(gs.DeepHunchException, match="geometry-estimated link masses"):
             scene.add_entity(gs.morphs.URDF(file=urdf, align=True, merge_fixed_links=False), material=material)
 
 
@@ -2099,10 +2099,10 @@ def test_merge_entities(is_fixed, merge_fixed_links, show_viewer, tol, monkeypat
             pos=(0.3, 0.0, 0.01),
         ),
     )
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         franka.attach(hand, "right_finger")
     # A merged pair is one kinematic tree, numbered within one solver, so the two entities must share one.
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         ghost_tool.attach(hand, "right_finger")
     ghost_tool.attach(ghost_mount, ghost_mount.base_link.name, pos=GHOST_MOUNT_OFFSET)
     # Omitting the mounting transform keeps the child's morph pose acting as the mount. The kinematic pair above
@@ -2110,24 +2110,24 @@ def test_merge_entities(is_fixed, merge_fixed_links, show_viewer, tol, monkeypat
     hand.attach(franka, "attachment")
     # Malformed mounting transforms (wrong shape, or a zero-length quaternion) raise before any kinematic-tree
     # mutation, leaving the entity attachable.
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         tool.attach(hand, "right_finger", pos=(0.0, 0.0))
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         tool.attach(hand, "right_finger", quat=(1.0, 0.0, 0.0))
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         tool.attach(hand, "right_finger", quat=(0.0, 0.0, 0.0, 0.0))
     tool.attach(hand, "right_finger", pos=TOOL_MOUNT_POS, quat=TOOL_MOUNT_QUAT)
     scene.build()
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         box.attach(hand, "right_finger")
 
     # Make sure that collision between hand base link and franka attachment point has been filtered out as adjacent
     collision_pair_idx = scene.rigid_solver.collider.collider_info.collision_pair_idx.to_numpy()
     assert collision_pair_idx[franka.get_link("attachment").idx, hand.base_link_idx] == -1
 
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         hand.set_pos(0.0)
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         hand.set_quat(0.0)
 
     # The free box is dynamically isolated from the robot, so its lateral position must stay put while the

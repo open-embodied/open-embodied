@@ -3,9 +3,9 @@ import os
 
 import numpy as np
 
-import genesis as gs
-from genesis.utils.geom import euler_to_quat
-from genesis.vis.keybindings import Key, KeyAction, Keybind
+import deephunch as gs
+from deephunch.utils.geom import euler_to_quat
+from deephunch.vis.keybindings import Key, KeyAction, Keybind
 
 # Position and angle increments for keyboard teleop control
 KEY_DPOS = 0.1
@@ -19,7 +19,7 @@ BOX_RING_RADIUS = 5.0
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Genesis LiDAR/Depth Camera Visualization with Keyboard Teleop")
+    parser = argparse.ArgumentParser(description="DeepHunch LiDAR/Depth Camera Visualization with Keyboard Teleop")
     parser.add_argument("-b", "--num-envs", type=int, default=0, help="Number of environments to replicate")
     parser.add_argument("-g", "--gpu", action="store_true", help="Run on GPU instead of CPU")
     parser.add_argument("--use-box", action="store_true", help="Use Box as robot instead of Go2")

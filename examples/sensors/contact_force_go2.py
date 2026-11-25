@@ -3,8 +3,8 @@ import os
 
 from tqdm import tqdm
 
-import genesis as gs
-from genesis.recorders.plotters import IS_MATPLOTLIB_AVAILABLE, IS_PYQTGRAPH_AVAILABLE
+import deephunch as gs
+from deephunch.recorders.plotters import IS_MATPLOTLIB_AVAILABLE, IS_PYQTGRAPH_AVAILABLE
 
 
 def main():

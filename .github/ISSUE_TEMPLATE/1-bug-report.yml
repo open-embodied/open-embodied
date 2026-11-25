@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to fill out this bug report, please make sure to [search for existing issues](https://github.com/Genesis-Embodied-AI/genesis-world/issues) before filing a new one!
+        Thanks for taking the time to fill out this bug report, please make sure to [search for existing issues](https://github.com/DeepHunch-Embodied-AI/deephunch-world/issues) before filing a new one!
   - type: textarea
     id: bug-description
     attributes:
@@ -24,7 +24,7 @@ body:
         If possible, provide a script triggering the bug, e.g.
         ```python
         # code snippet triggering the bug
-        import genesis as gs
+        import deephunch as gs
         gs.init()
         scene = gs.Scene(show_viewer=False)
         broken = scene.add_entity(

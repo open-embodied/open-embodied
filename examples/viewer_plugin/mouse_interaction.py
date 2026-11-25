@@ -2,8 +2,8 @@ import argparse
 import math
 import os
 
-import genesis as gs
-from genesis.vis.keybindings import Key, KeyAction, Keybind
+import deephunch as gs
+from deephunch.vis.keybindings import Key, KeyAction, Keybind
 
 
 def main():

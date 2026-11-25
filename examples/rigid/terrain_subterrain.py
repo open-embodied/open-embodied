@@ -2,7 +2,7 @@ import argparse
 
 import torch
 
-import genesis as gs
+import deephunch as gs
 
 
 def main():

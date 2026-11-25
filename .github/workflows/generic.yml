@@ -137,7 +137,7 @@ jobs:
             TORCH_SPEC="torch<2.15"
           fi
           pip3 install "${TORCH_SPEC}" --upgrade --index-url https://download.pytorch.org/whl/cpu
-      - name: Install Genesis
+      - name: Install DeepHunch
         shell: bash
         run: |
           pip install ".[dev,render,usd]"

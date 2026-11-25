@@ -49,8 +49,8 @@ else:
     except Exception:
         has_display = False
     if not has_display and sys.platform == "darwin":
-        # A display asleep, as while the screen is locked, stops being active but stays online, and Genesis opens
-        # the viewer window on it all the same, which 'genesis.utils.misc.get_default_screen' takes care of.
+        # A display asleep, as while the screen is locked, stops being active but stays online, and DeepHunch opens
+        # the viewer window on it all the same, which 'deephunch.utils.misc.get_default_screen' takes care of.
         from pyglet.libs.darwin.cocoapy import quartz
 
         num_displays = ctypes.c_uint32()
@@ -60,13 +60,13 @@ else:
 # Determine whether the optional 'imgui-bundle' dependency is available
 is_imgui_bundle_supported = find_spec("imgui_bundle") is not None
 
-# Forcibly disable Mujoco OpenGL to avoid conflicts with Genesis
+# Forcibly disable Mujoco OpenGL to avoid conflicts with DeepHunch
 os.environ["MUJOCO_GL"] = "0"
 
 # Forcibly disable tqdm to avoid random crashes on the MacOS CI
 os.environ["TQDM_DISABLE"] = "1"
 
-# pyglet must be configured in headless mode before importing Genesis if necessary.
+# pyglet must be configured in headless mode before importing DeepHunch if necessary.
 # Note that environment variables are used instead of global options to ease option propagation to subprocesses.
 if not has_display and has_egl:
     pyglet.options["headless"] = True
@@ -199,7 +199,7 @@ SKIP_NO_IMGUI_BUNDLE = _skip_reason("'imgui-bundle' is not available.")
 
 # Modules whose import is delayed until the environment of the worker is set, since they read environment variables
 # (device selection, thread counts, cache folders) as they are imported
-DELAYED_MODULES = ("genesis", "numba", "numpy", "quadrants", "torch")
+DELAYED_MODULES = ("deephunch", "numba", "numpy", "quadrants", "torch")
 
 
 @contextlib.contextmanager
@@ -262,7 +262,7 @@ with lazy_imports():
     import numpy as np
     import torch
 
-    import genesis as gs
+    import deephunch as gs
 
     from .utils.assets import (
         get_hf_dataset,
@@ -271,7 +271,7 @@ with lazy_imports():
         mark_snapshots_pending,
         sync_snapshots,
     )
-    from .utils.simulators import build_genesis_sim, build_mujoco_sim
+    from .utils.simulators import build_deephunch_sim, build_mujoco_sim
 
 
 def is_mem_monitoring_supported():
@@ -396,7 +396,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
     # Properly configure Quadrants std out stream right away to avoid significant performance penalty (~10%)
     # Note that this variable must be set in the main thread BEFORE spawning the distributed workers, otherwise
-    # the variable will be set incorrectly. Although, Genesis is already setting this env variable properly at import,
+    # the variable will be set incorrectly. Although, DeepHunch is already setting this env variable properly at import,
     # relying on this mechanism is fragile.
     os.environ.setdefault("QD_ENABLE_PYBUF", "0" if sys.stdout is sys.__stdout__ else "1")
 
@@ -815,7 +815,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
     if IS_INTERACTIVE_VIEWER_AVAILABLE:
         parser.addoption("--vis", action="store_true", default=False, help="Enable interactive viewer.")
-    parser.addoption("--dev", action="store_true", default=False, help="Enable genesis debug mode.")
+    parser.addoption("--dev", action="store_true", default=False, help="Enable deephunch debug mode.")
     parser.addoption(
         "--snapshot-sync",
         action="store_true",
@@ -866,9 +866,9 @@ def asset_tmp_path(tmp_path_factory):
 
 @pytest.fixture
 def caplog(caplog):
-    # The genesis logger keeps its records from propagating to the root logger, so that they are never printed twice.
+    # The deephunch logger keeps its records from propagating to the root logger, so that they are never printed twice.
     # The handler of the fixture therefore has to sit on it directly.
-    logger = logging.getLogger("genesis")
+    logger = logging.getLogger("deephunch")
     logger.addHandler(caplog.handler)
     yield caplog
     logger.removeHandler(caplog.handler)
@@ -1089,7 +1089,7 @@ def use_deterministic_algorithms(request):
 
 
 @pytest.fixture(scope="function", autouse=True)
-def initialize_genesis(
+def initialize_deephunch(
     request, monkeypatch, tmp_path, backend, precision, performance_mode, debug, cache, use_deterministic_algorithms
 ):
     # Early return if backend is None
@@ -1112,7 +1112,7 @@ def initialize_genesis(
         monkeypatch.setenv("QD_OFFLINE_CACHE", "0")
         # FIXME: Must set temporary cache even if caching is forcibly disabled because this flag is not always honored
         monkeypatch.setenv("QD_OFFLINE_CACHE_FILE_PATH", str(tmp_path / ".cache" / "quadrants"))
-        monkeypatch.setenv("GS_CACHE_FILE_PATH", str(tmp_path / ".cache" / "genesis"))
+        monkeypatch.setenv("GS_CACHE_FILE_PATH", str(tmp_path / ".cache" / "deephunch"))
 
         # Wipe worker-specific cache entirely since there is no way to disable it
         numba_cache_dir = Path(os.environ["NUMBA_CACHE_DIR"])
@@ -1121,19 +1121,19 @@ def initialize_genesis(
         shutil.rmtree(numba_cache_dir, ignore_errors=True)
 
     # Redirect name terrain cache directory to some test-local temporary location to avoid conflict and persistence
-    monkeypatch.setattr("genesis.utils.cache.get_gnd_cache_dir", lambda: str(tmp_path / ".cache" / "terrain"))
+    monkeypatch.setattr("deephunch.utils.cache.get_gnd_cache_dir", lambda: str(tmp_path / ".cache" / "terrain"))
 
     # Software H.264 encoding is preferred because VideoToolbox drops frames silently on the macOS CI virtual machines
     codecs = gs.utils.video_encoder.H264_CODEC_CANDIDATES
     monkeypatch.setattr(
-        "genesis.utils.video_encoder.H264_CODEC_CANDIDATES", ("libx264", *[c for c in codecs if c != "libx264"])
+        "deephunch.utils.video_encoder.H264_CODEC_CANDIDATES", ("libx264", *[c for c in codecs if c != "libx264"])
     )
 
     try:
         # Skip if requested backend is not available
         try:
             gs.utils.get_device(backend)
-        except gs.GenesisException:
+        except gs.DeepHunchException:
             pytest.skip(f"Backend '{backend}' not available on this machine")
 
         # Skip test if not supported by this machine
@@ -1175,7 +1175,7 @@ def initialize_genesis(
 
 @pytest.fixture
 def xml_path(request, tmp_path, model_name):
-    """The model Mujoco is built from, which holds every subtree, however Genesis groups them into entities."""
+    """The model Mujoco is built from, which holds every subtree, however DeepHunch groups them into entities."""
     # An asset-relative path passes through to the asset resolver; a bare name is the fixture generating the model.
     if "/" in model_name:
         return model_name
@@ -1188,14 +1188,14 @@ def xml_path(request, tmp_path, model_name):
 
 @pytest.fixture
 def xml_paths(request, tmp_path, xml_path):
-    """The models the Genesis scene is assembled from, one entity per model, which is the Mujoco model by default.
+    """The models the DeepHunch scene is assembled from, one entity per model, which is the Mujoco model by default.
 
     A test marked 'split_entities' gets the model of 'model_name' split into one model per independent subtree, so that
-    the Genesis scene holds one entity per subtree while Mujoco holds them all in one model. Every top-level body of
+    the DeepHunch scene holds one entity per subtree while Mujoco holds them all in one model. Every top-level body of
     the worldbody roots a subtree of its own, and the geoms of the worldbody itself root nothing, so they make a model
     of their own. Each part keeps the headers of the source model, its defaults and assets included.
 
-    Splitting changes which entity a body belongs to, and with it how Genesis pairs contacts, so it is asked for by the
+    Splitting changes which entity a body belongs to, and with it how DeepHunch pairs contacts, so it is asked for by the
     tests that compare what must not depend on the grouping, rather than applied to every model.
     """
     if next(request.node.iter_markers("split_entities"), None) is None:
@@ -1261,7 +1261,7 @@ def gs_sim(
     show_viewer,
     mj_sim,
 ):
-    return build_genesis_sim(
+    return build_deephunch_sim(
         xml_paths,
         gs_solver,
         gs_integrator,
@@ -1414,7 +1414,7 @@ def load_trajectory_snapshot(request):
     of steps it records, and whether the replay shows the viewer, and returns the loaded trajectory. The scene is built
     and recorded only when the snapshots are updated, the published snapshot being loaded otherwise.
     """
-    from genesis.recorders.trajectory import TRAJECTORY_FORMAT
+    from deephunch.recorders.trajectory import TRAJECTORY_FORMAT
 
     # The path is the one syrupy gives a single-file snapshot of the test. The test reads the file itself, so syrupy
     # leaves it out of its count of unused snapshots.

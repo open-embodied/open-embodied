@@ -12,7 +12,7 @@ Performance example:
 env=franka 	| batch_size=30000 	| dtype=field 	| backend=cuda 	| compile_time=68.4 	| runtime_fps=20067534.0 	| realtime_factor=200675.3
 env=anymal 	| constraint_solver=Newton 	| gjk_collision=False 	| batch_size=0 	| backend=cpu 	| dtype=ndarray 	|compile_time=3.2 	| runtime_fps=1355.0 	| realtime_factor=3322
 
-... and check uploads to https://wandb.ai/genesis-ai-company/genesis-benchmarks-mem/table
+... and check uploads to https://wandb.ai/deephunch-ai-company/deephunch-benchmarks-mem/table
 """
 
 import argparse
@@ -33,7 +33,7 @@ def upload_results_to_wandb(
 
     Args:
         results_file_path: Path to the results file
-        project_name: W&B project name (e.g., "genesis-benchmarks-mem" or "genesis-benchmarks-perf")
+        project_name: W&B project name (e.g., "deephunch-benchmarks-mem" or "deephunch-benchmarks-perf")
         metric_names: List of metric field names to log. If None, logs all non-parameter fields.
     """
     revision, _ = get_git_commit_info()
@@ -114,7 +114,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Upload benchmark results to W&B")
     parser.add_argument("--in-file", required=True, help="Path to results file")
     parser.add_argument(
-        "--project", required=True, help="W&B project name (e.g., genesis-benchmarks-mem or genesis-benchmarks-perf)"
+        "--project", required=True, help="W&B project name (e.g., deephunch-benchmarks-mem or deephunch-benchmarks-perf)"
     )
     parser.add_argument("--run-prefix", help="Added at start of W&B run name, if provided")
     parser.add_argument(

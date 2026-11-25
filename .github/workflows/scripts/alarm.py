@@ -328,7 +328,7 @@ class Alarm:
                 continue
 
             # Ignore runs associated with a commit that is not part of the official repository
-            if not branch.startswith("Genesis-Embodied-AI/") and not self.dev_allow_all_branches:
+            if not branch.startswith("DeepHunch-Embodied-AI/") and not self.dev_allow_all_branches:
                 continue
 
             # Skip runs did not finish for some reason

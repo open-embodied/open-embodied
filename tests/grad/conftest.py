@@ -13,9 +13,9 @@ with lazy_imports():
 
     import quadrants as qd
 
-    import genesis as gs
-    from genesis.grad.bridge import LaunchRecorder
-    from genesis.utils.misc import no_read_guard, qd_to_torch
+    import deephunch as gs
+    from deephunch.grad.bridge import LaunchRecorder
+    from deephunch.utils.misc import no_read_guard, qd_to_torch
 
 
 @pytest.fixture(autouse=True)
@@ -85,7 +85,7 @@ def step_overwrites(backend, monkeypatch):
         if is_copying:
             return
         # A launch may trigger launches of its own as it is inserted, such as the refresh of a derived array it reads,
-        # which run before it as entries of their own (see 'genesis.engine.state_change'), so the values before it are
+        # which run before it as entries of their own (see 'deephunch.engine.state_change'), so the values before it are
         # taken once they are done, and its entry is the one its insertion leaves last.
         insert(recorder, kernel, args)
         if entry_open.get(recorder) is not recorder.entries[-1]:

@@ -1,7 +1,7 @@
 import math
 import os
 import torch
-import genesis as gs
+import deephunch as gs
 
 
 gs.init(backend=gs.cpu, precision="32", logging_level="info")

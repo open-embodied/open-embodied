@@ -5,7 +5,7 @@ Location: `examples/`, one folder per feature area. Every script lives in a fold
 ## Running Examples
 
 ```bash
-uv run examples/tutorials/hello_genesis.py
+uv run examples/tutorials/hello_deephunch.py
 uv run examples/rigid/single_franka.py
 ```
 
@@ -72,12 +72,12 @@ Beyond it, two things matter most here:
 - **Keep a script linear.** A helper function is warranted when it is called more than once, or is passed as
   a callback or thread target. A one-shot linear script reads top to bottom inside `main()`.
 - **Model the sanctioned data access.** Reach for the public entity and solver getters first, and
-  `qd_to_numpy` / `qd_to_torch` from `genesis.utils.misc` when no getter exists.
+  `qd_to_numpy` / `qd_to_torch` from `deephunch.utils.misc` when no getter exists.
 
 ## Key Examples
 
 ### Getting Started
-- `tutorials/hello_genesis.py` - Basic introduction
+- `tutorials/hello_deephunch.py` - Basic introduction
 - `tutorials/control_your_robot.py` - Robot control basics
 - `tutorials/parallel_simulation.py` - Batched environments
 

@@ -1,8 +1,8 @@
 import argparse
 import os
 
-import genesis as gs
-from genesis.utils.misc import qd_to_torch
+import deephunch as gs
+from deephunch.utils.misc import qd_to_torch
 
 BASE_HEIGHT = 0.020
 RING_HEIGHT = 0.020

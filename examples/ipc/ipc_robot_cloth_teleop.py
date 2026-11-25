@@ -20,9 +20,9 @@ import os
 import numpy as np
 from huggingface_hub import snapshot_download
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.vis.keybindings import Key, KeyAction, Keybind
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.vis.keybindings import Key, KeyAction, Keybind
 
 DELTA_POS = 0.003
 DELTA_ROT = 0.02
@@ -87,7 +87,7 @@ def main():
     # Add cloths
     cloth_asset_path = snapshot_download(
         repo_type="dataset",
-        repo_id="Genesis-Intelligence/assets",
+        repo_id="DeepHunch-Intelligence/assets",
         revision="8aa8fcd60500b9f3a36c356080224bdb1be9ee59",
         allow_patterns="/IPC/grid20x20.obj",
         max_workers=1,
@@ -184,7 +184,7 @@ def main():
     scene.viewer.update(force=True)
 
     if scene.viewer is None:
-        gs.logger.warning("Viewer is not active. Keyboard input requires the Genesis viewer.")
+        gs.logger.warning("Viewer is not active. Keyboard input requires the DeepHunch viewer.")
         return
 
     gripper_close = np.array(False, dtype=gs.np_bool)

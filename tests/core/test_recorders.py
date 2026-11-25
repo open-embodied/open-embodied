@@ -9,8 +9,8 @@ import pytest
 
 import av
 
-import genesis as gs
-from genesis.utils.image_exporter import as_grayscale_image
+import deephunch as gs
+from deephunch.utils.image_exporter import as_grayscale_image
 
 from ..utils.assertions import assert_allclose, assert_equal, rgb_array_to_png_bytes
 
@@ -138,7 +138,7 @@ def test_plotter(tmp_path, monkeypatch, mpl_agg_backend, png_snapshot):
         nonlocal buffers
         buffers.append((data, cur_time))
 
-    monkeypatch.setattr("genesis.recorders.file_writers.VideoFileWriter.process", process)
+    monkeypatch.setattr("deephunch.recorders.file_writers.VideoFileWriter.process", process)
 
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
@@ -349,7 +349,7 @@ def test_error_handling(tmp_path, caplog):
         ),
     )
     # Recorder options are checked as they are built
-    with pytest.raises(gs.GenesisException, match="not supported"):
+    with pytest.raises(gs.DeepHunchException, match="not supported"):
         gs.recorders.VideoFile(filename=tmp_path / "video.mp4", codec="no_such_codec")
     # A recorder that raises records no more, a reset included. Registered first, the rejection of a frame aborts the
     # step before the other recorders sample it. The first video rejects the frame the stop records, so it samples every
@@ -394,14 +394,14 @@ def test_error_handling(tmp_path, caplog):
     )
     scene.build()
     # A recorder sizes its buffers from the build, so none is registered after it
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         scene.add_recorder(data_func=box.get_pos, rec_options=gs.recorders.CSVFile(filename=tmp_path / "late.csv"))
 
     scene.step()
     scene.step()
     # A failure on the recording thread is raised on the stepping thread, once, by the sync that waits for it or at the
     # next step the recorder is reached once it failed
-    with pytest.raises(gs.GenesisException, match="Unsupported data type"):
+    with pytest.raises(gs.DeepHunchException, match="Unsupported data type"):
         synced_recorder.sync()
     for _ in range(1000):
         if not stepped_recorder.is_alive:
@@ -409,9 +409,9 @@ def test_error_handling(tmp_path, caplog):
         time.sleep(0.01)
     assert not stepped_recorder.is_alive
     # A frame of another shape than the first frame of its video is reported, and the step recording it is aborted
-    with pytest.raises(gs.GenesisException, match="first frame of the video"):
+    with pytest.raises(gs.DeepHunchException, match="first frame of the video"):
         scene.step()
-    with pytest.raises(gs.GenesisException, match="Unsupported data type"):
+    with pytest.raises(gs.DeepHunchException, match="Unsupported data type"):
         scene.step()
     # A reset leaves the recorders that failed out, and the others keep recording through it
     caplog.clear()
@@ -423,7 +423,7 @@ def test_error_handling(tmp_path, caplog):
 
     # The state the run stopped at reaches every recorder, then the recorders are stopped and the failure is raised,
     # and the destruction of the scene completes behind it
-    with pytest.raises(gs.GenesisException, match="integer type"):
+    with pytest.raises(gs.DeepHunchException, match="integer type"):
         scene.destroy()
     assert not scene.is_built and scene.visualizer is None
     # The header, then the first, second and fourth steps and the reset, then the two steps and the stop

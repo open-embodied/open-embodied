@@ -12,7 +12,7 @@ except (metadata.PackageNotFoundError, ImportError, ValueError) as e:
     raise ImportError("Please install 'rsl-rl-lib>=5.0.0'.") from e
 from rsl_rl.runners import OnPolicyRunner
 
-import genesis as gs
+import deephunch as gs
 
 from hover_env import HoverEnv
 

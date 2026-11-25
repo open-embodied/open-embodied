@@ -6,19 +6,19 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
-from genesis.utils.misc import tensor_to_array
+import deephunch as gs
+from deephunch.utils.misc import tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 
 
 @pytest.mark.required
 def test_lazy_sensor_discovery(show_viewer, tmp_path):
-    from genesis.engine.sensors.camera import RasterizerCameraSensor
-    from genesis.engine.sensors.contact_force import ContactSensor
-    from genesis.engine.sensors.depth_camera import DepthCameraSensor
-    from genesis.engine.sensors.imu import IMUSensor
-    from genesis.engine.sensors.sensor_manager import SensorManager
+    from deephunch.engine.sensors.camera import RasterizerCameraSensor
+    from deephunch.engine.sensors.contact_force import ContactSensor
+    from deephunch.engine.sensors.depth_camera import DepthCameraSensor
+    from deephunch.engine.sensors.imu import IMUSensor
+    from deephunch.engine.sensors.sensor_manager import SensorManager
 
     # Verify built-in registrations resolve to the exact sensor classes
     assert SensorManager.SENSOR_TYPES_MAP[gs.sensors.Contact] is ContactSensor
@@ -36,7 +36,7 @@ def test_lazy_sensor_discovery(show_viewer, tmp_path):
     (pkg_dir / "options.py").write_text(
         textwrap.dedent(
             """\
-        from genesis.options.sensors.options import SensorOptions
+        from deephunch.options.sensors.options import SensorOptions
 
         class FakeSensorOptions(SensorOptions["FakeSensor"]):
             pass
@@ -52,9 +52,9 @@ def test_lazy_sensor_discovery(show_viewer, tmp_path):
             """\
         from dataclasses import dataclass
 
-        import genesis as gs
+        import deephunch as gs
         import torch
-        from genesis.engine.sensors.base_sensor import Sensor, SharedSensorMetadata
+        from deephunch.engine.sensors.base_sensor import Sensor, SharedSensorMetadata
 
         from .options import FakeSensorOptions
 
@@ -109,7 +109,7 @@ def test_lazy_sensor_discovery(show_viewer, tmp_path):
         assert SensorManager.SENSOR_TYPES_MAP[FakeSensorOptions] is sensor_cls
 
         # A sensor class defined nowhere is reported along with the sibling modules lacking a dependency
-        with pytest.raises(gs.GenesisException, match="fake_sensor_plugin.optional"):
+        with pytest.raises(gs.DeepHunchException, match="fake_sensor_plugin.optional"):
             SensorManager._resolve_sensor_cls(options_mod.MissingSensorOptions)
 
         # Verify it works end-to-end with a scene
@@ -134,10 +134,10 @@ def test_post_process_requires_intermediate_override():
     # or `_get_intermediate_dtype` must raise TypeError at class-definition time. The intermediate buffer is
     # structurally distinct from the return buffer (timeline ring is in intermediate space); the explicit override
     # forces the author to declare it - even a no-op override is acceptable when shape/dtype coincide with return.
-    # Local import: importing `genesis.engine.sensors.base_sensor` at module top triggers the sensors package
-    # `__init__.py`, which transitively loads `genesis.utils.sdf` and dereferences `gs.qd_float`. That attribute is
+    # Local import: importing `deephunch.engine.sensors.base_sensor` at module top triggers the sensors package
+    # `__init__.py`, which transitively loads `deephunch.utils.sdf` and dereferences `gs.qd_float`. That attribute is
     # only set by `gs.init(...)`, which runs in the autouse conftest fixture after pytest collection. Defer here.
-    from genesis.engine.sensors.base_sensor import Sensor
+    from deephunch.engine.sensors.base_sensor import Sensor
 
     with pytest.raises(TypeError, match="_get_intermediate"):
 
@@ -167,8 +167,8 @@ def test_pipeline_contract(tol):
     #     raw value at each step and the expected outputs are simple shifts / windows of that sequence.
     from dataclasses import dataclass
 
-    from genesis.engine.sensors.base_sensor import SimpleSensor, SimpleSensorMetadata
-    from genesis.options.sensors.options import SimpleSensorOptions
+    from deephunch.engine.sensors.base_sensor import SimpleSensor, SimpleSensorMetadata
+    from deephunch.options.sensors.options import SimpleSensorOptions
 
     @dataclass
     class FakeMetadata(SimpleSensorMetadata):
@@ -395,8 +395,8 @@ def test_pipeline_contract_uint8_delay(tol):
     # and the delayed values match the cast of `raw[k - delay]`.
     from dataclasses import dataclass
 
-    from genesis.engine.sensors.base_sensor import SimpleSensor, SimpleSensorMetadata
-    from genesis.options.sensors.options import SimpleSensorOptions
+    from deephunch.engine.sensors.base_sensor import SimpleSensor, SimpleSensorMetadata
+    from deephunch.options.sensors.options import SimpleSensorOptions
 
     @dataclass
     class FakeQuantizedMetadata(SimpleSensorMetadata):
@@ -459,7 +459,7 @@ def test_pipeline_contract_uint8_delay(tol):
 @pytest.mark.slow  # ~200s
 @pytest.mark.required
 def test_add_and_read_all_registered_sensors():
-    from genesis.engine.sensors.sensor_manager import SensorManager
+    from deephunch.engine.sensors.sensor_manager import SensorManager
 
     scene = gs.Scene(show_viewer=False)
     scene.add_entity(gs.morphs.Plane())
@@ -598,7 +598,7 @@ def test_shared_context(show_viewer):
     # Raycaster and DepthCamera are distinct sensor types that both cast against the scene geometry; they must share
     # one RaycastContext (a single BVH set) instead of each building its own. A sensor type declaring no context (IMU)
     # must resolve to None.
-    from genesis.engine.sensors.raycaster import RaycastContext
+    from deephunch.engine.sensors.raycaster import RaycastContext
 
     scene = gs.Scene(show_viewer=show_viewer)
     scene.add_entity(gs.morphs.Plane())

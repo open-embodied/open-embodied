@@ -5,16 +5,16 @@ from typing import TYPE_CHECKING, NamedTuple, override
 
 import numpy as np
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.utils.misc import tensor_to_array
-from genesis.vis.keybindings import Key, KeyAction, Keybind
-from genesis.vis.viewer_plugins import EVENT_HANDLE_STATE, EVENT_HANDLED, RaycasterViewerPlugin
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.utils.misc import tensor_to_array
+from deephunch.vis.keybindings import Key, KeyAction, Keybind
+from deephunch.vis.viewer_plugins import EVENT_HANDLE_STATE, EVENT_HANDLED, RaycasterViewerPlugin
 
 if TYPE_CHECKING:
-    from genesis.engine.entities.rigid_entity import RigidLink
-    from genesis.engine.scene import Scene
-    from genesis.ext.pyrender.node import Node
+    from deephunch.engine.entities.rigid_entity import RigidLink
+    from deephunch.engine.scene import Scene
+    from deephunch.ext.pyrender.node import Node
 
 
 class SelectedPoint(NamedTuple):

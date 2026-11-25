@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
+import deephunch as gs
 
 from ..utils.assertions import assert_allclose, assert_equal
 from .utils import make_diff_scene_pair
@@ -209,17 +209,17 @@ def test_closed_loop_rollout_follows_torch_semantics(grad_revolute, precision, s
     assert_allclose(grad_retained, grad_functional, tol=gs.EPS)
     with torch.no_grad():
         arms_ana[0].control_dofs_force(0.0)
-    with pytest.raises(gs.GenesisException, match="changed since this operation"):
+    with pytest.raises(gs.DeepHunchException, match="changed since this operation"):
         torch.autograd.grad(loss, params_ana)
     # So does a change of the model, which the backward pass of every step would replay with
     loss = rollout(scene_ana, arms_ana, params_ana)
     arms_ana[0].set_dofs_kv(arms_ana[0].get_dofs_kv())
-    with pytest.raises(gs.GenesisException, match="changed since this operation"):
+    with pytest.raises(gs.DeepHunchException, match="changed since this operation"):
         torch.autograd.grad(loss, params_ana)
     # A gradient that is not finite raises during the backward pass, naming the step it reaches first, and so does an
     # error the last steps of the rollout flagged
     loss = rollout(scene_ana, arms_ana, params_ana)
-    with pytest.raises(gs.GenesisException, match=f"Backward pass of step {HORIZON - 1}: .*'inf' gradient"):
+    with pytest.raises(gs.DeepHunchException, match=f"Backward pass of step {HORIZON - 1}: .*'inf' gradient"):
         torch.autograd.grad(loss * float("nan"), params_ana)
     # So does one that a later write of the state cuts from the start of the rollout, where the gradient stays finite
     loss = rollout(scene_ana, arms_ana, params_ana)
@@ -229,18 +229,18 @@ def test_closed_loop_rollout_follows_torch_semantics(grad_revolute, precision, s
         arm.control_dofs_force(0.0)
     scene_ana.step()
     loss = loss + float("nan") * arms_ana[0].get_dofs_position().sum()
-    with pytest.raises(gs.GenesisException, match=f"Backward pass of step {HORIZON}: .*'inf' gradient"):
+    with pytest.raises(gs.DeepHunchException, match=f"Backward pass of step {HORIZON}: .*'inf' gradient"):
         torch.autograd.grad(loss, params_ana)
     loss = rollout(scene_ana, arms_ana, params_ana)
     arms_ana[0].set_dofs_velocity(float("nan"))
     scene_ana.step()
-    with pytest.raises(gs.GenesisException, match="^Invalid accelerations"):
+    with pytest.raises(gs.DeepHunchException, match="^Invalid accelerations"):
         torch.autograd.grad(loss, params_ana)
     # A 'nan' control force, unbounded by the force range of the dofs, drives the state to infinity
     loss = rollout(scene_ana, arms_ana, params_ana)
     arms_ana[0].control_dofs_force(float("nan"))
     scene_ana.step()
-    with pytest.raises(gs.GenesisException, match="^Invalid accelerations"):
+    with pytest.raises(gs.DeepHunchException, match="^Invalid accelerations"):
         torch.autograd.grad(loss, params_ana)
 
     # A write given an index several times leaves the value of its last occurrence, which alone gets a gradient, whether
@@ -373,5 +373,5 @@ def test_reject_non_differentiable_solvers():
         scene = gs.Scene(sim_options=gs.options.SimOptions(requires_grad=True), **options, show_viewer=False)
         for material in materials:
             scene.add_entity(morph=box, material=material)
-        with pytest.raises(gs.GenesisException, match=component_name):
+        with pytest.raises(gs.DeepHunchException, match=component_name):
             scene.build()

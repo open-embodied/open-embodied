@@ -11,9 +11,9 @@ import argparse
 import math
 import os
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.vis.keybindings import Key, KeyAction, Keybind
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.vis.keybindings import Key, KeyAction, Keybind
 
 NUT_START_POS = (0.013, 0.0, 0.05)
 NUT_SEAT_X = 0.0

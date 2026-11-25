@@ -3,8 +3,8 @@
 ## Import Pattern
 
 ```python
-import genesis as gs
-import genesis.utils.geom as gu
+import deephunch as gs
+import deephunch.utils.geom as gu
 import numpy as np
 import torch
 ```
@@ -18,7 +18,7 @@ import torch
 
 ## Configuration via Pydantic Options
 
-All configuration uses Pydantic models in `genesis/options/`:
+All configuration uses Pydantic models in `deephunch/options/`:
 
 ```python
 scene = gs.Scene(
@@ -30,7 +30,7 @@ scene = gs.Scene(
 
 ## Tensor Operations
 
-Genesis uses PyTorch tensors on `gs.device`:
+DeepHunch uses PyTorch tensors on `gs.device`:
 
 ```python
 # Always specify device
@@ -43,7 +43,7 @@ torch_tensor = torch.from_numpy(numpy_array).to(gs.device)
 ## Error Handling
 
 ```python
-# Use Genesis exception for domain errors
+# Use DeepHunch exception for domain errors
 gs.raise_exception("Invalid parameter value")
 
 # Use warnings for non-critical issues
@@ -64,7 +64,7 @@ scene.step()           # Now safe to step
 ## Backend Selection
 
 ```python
-import genesis as gs
+import deephunch as gs
 
 # CPU backend (default for debug mode)
 gs.init(backend=gs.cpu)
@@ -81,7 +81,7 @@ gs.init(backend=gs.gpu, precision="32")  # or "64"
 ### Basic Simulation Loop
 
 ```python
-import genesis as gs
+import deephunch as gs
 
 gs.init(backend=gs.gpu)
 scene = gs.Scene(show_viewer=True)
@@ -101,7 +101,7 @@ for _ in range(1000):
 ### Parallel Environments
 
 ```python
-import genesis as gs
+import deephunch as gs
 import torch
 
 gs.init(backend=gs.gpu)

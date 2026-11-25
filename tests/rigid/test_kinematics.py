@@ -5,15 +5,15 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.engine.entities.rigid_entity.rigid_entity import compute_forward_kinematics
-from genesis.utils.misc import qd_to_numpy, tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.engine.entities.rigid_entity.rigid_entity import compute_forward_kinematics
+from deephunch.utils.misc import qd_to_numpy, tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 
 if TYPE_CHECKING:
-    from genesis.engine.entities.rigid_entity.rigid_entity import RigidEntity
+    from deephunch.engine.entities.rigid_entity.rigid_entity import RigidEntity
 
 
 @pytest.mark.required
@@ -915,7 +915,7 @@ def test_setters(show_viewer, tol):
         np.array((True,), dtype=bool),
         torch.tensor((True,), dtype=torch.bool),
     ):
-        with pytest.raises(gs.GenesisException):
+        with pytest.raises(gs.DeepHunchException):
             ghost_robot.get_dofs_position(dofs_idx_local)
 
     ghost_box.set_dofs_position(torch.zeros(ghost_box.n_dofs, device=gs.device))
@@ -1064,12 +1064,12 @@ def test_kinematics_queries(n_envs, show_viewer, tol):
         entity.set_qpos(qpos)
         assert_allclose(end_effector.get_pos(), target_pos, tol=tol)
 
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         franka.inverse_kinematics(link=end_effector, pos=target_pos, damping=5e-6)
 
     # Carrying more targets than the error buffer is sized for is rejected, rather than written past.
     n_tgts = franka.solver.options.IK_max_targets
-    with pytest.raises(gs.GenesisException):
+    with pytest.raises(gs.DeepHunchException):
         franka.inverse_kinematics_multilink(
             links=franka.links[: n_tgts + 1],
             poss=[target_pos] * (n_tgts + 1),

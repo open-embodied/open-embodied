@@ -6,12 +6,12 @@ body:
   - type: markdown
     attributes:
       value: |
-        Documentation issues are tracked here, even though the pages themselves live in [genesis-doc](https://github.com/Genesis-Embodied-AI/genesis-doc). Please make sure to [search for existing issues](https://github.com/Genesis-Embodied-AI/genesis-world/issues) before filing a new one!
+        Documentation issues are tracked here, even though the pages themselves live in [deephunch-doc](https://github.com/DeepHunch-Embodied-AI/deephunch-doc). Please make sure to [search for existing issues](https://github.com/DeepHunch-Embodied-AI/deephunch-world/issues) before filing a new one!
   - type: input
     id: page
     attributes:
       label: Affected Page
-      placeholder: "Link to the page on https://genesis-world.readthedocs.io, or the path of the source file in genesis-doc."
+      placeholder: "Link to the page on https://deephunch-world.readthedocs.io, or the path of the source file in deephunch-doc."
     validations:
       required: true
   - type: textarea

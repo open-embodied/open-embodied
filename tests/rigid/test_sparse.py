@@ -1,7 +1,7 @@
 import pytest
 
-import genesis as gs
-import genesis.utils.geom as gu
+import deephunch as gs
+import deephunch.utils.geom as gu
 
 from ..utils.assertions import assert_allclose
 

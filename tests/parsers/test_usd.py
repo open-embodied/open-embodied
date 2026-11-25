@@ -17,13 +17,13 @@ if find_spec("pxr") is None:
     pytest.skip("USD is not supported because 'pxr' module is not available.", allow_module_level=True)
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
-from genesis.utils.usd import HAS_OMNIVERSE_KIT_SUPPORT
+from deephunch.utils.usd import HAS_OMNIVERSE_KIT_SUPPORT
 from ..conftest import SKIP_NO_OMNIVERSE_KIT
 
-import genesis as gs
-from genesis.engine.scene import SCENE_FORMAT
-from genesis.utils.misc import tensor_to_array
-from genesis.utils.serialization import MANIFEST_NAME
+import deephunch as gs
+from deephunch.engine.scene import SCENE_FORMAT
+from deephunch.utils.misc import tensor_to_array
+from deephunch.utils.serialization import MANIFEST_NAME
 
 from ..utils.assertions import assert_allclose, assert_equal
 from ..utils.assets import get_hf_dataset
@@ -464,7 +464,7 @@ def test_align_requires_all_or_none_geom_densities(density_align_usd, align, rho
     # No kinematic entity holds such a density (see '_align_free_roots'), so an explicit align=True raises. The
     # estimate is resolved as the entity is added, and it raises from there.
     if align:
-        with pytest.raises(gs.GenesisException, match="with and without an authored density"):
+        with pytest.raises(gs.DeepHunchException, match="with and without an authored density"):
             scene.add_entity(
                 gs.morphs.USD(file=density_align_usd, prim_path="/root/mixed_body", align=align),
                 material=gs.materials.Rigid(rho=rho),
@@ -572,7 +572,7 @@ def test_collision_filtering(collision_filtering_usd, show_viewer, caplog):
     )
     stage_spec = gs.entities.Rigid(morph=gs.morphs.USD(file=collision_filtering_usd))
     stage_spec.select(gs.indices.Link.named("base")).set_friction(1.0)
-    with pytest.raises(gs.GenesisException, match="selects no part"):
+    with pytest.raises(gs.DeepHunchException, match="selects no part"):
         scene.add_stage(spec=stage_spec)
     scene.build()
     ghosts_pos = [tensor_to_array(ghost.get_pos()) for ghost in ghosts]

@@ -5,7 +5,7 @@ on:
     workflows: ["Production"]
     types: [completed]
   # Callers select a W&B project and optional filters. Their benchmark artifacts belong to the calling run;
-  # the Production trigger instead reads artifacts from the completed run and uses Genesis's usual project.
+  # the Production trigger instead reads artifacts from the completed run and uses DeepHunch's usual project.
   workflow_call:
     inputs:
       wandb_project:
@@ -93,10 +93,10 @@ jobs:
           # Note that secrets are not passed to workflows that are triggered by a pull request from a fork
           # --- W&B ---
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-          WANDB_ENTITY: genesis-ai-company
+          WANDB_ENTITY: deephunch-ai-company
           WANDB_SILENT: "true"
           BASELINE_PROJECT: >-
-            ${{ inputs.wandb_project || (github.repository == job.workflow_repository && 'genesis-benchmarks-2' || '') }}
+            ${{ inputs.wandb_project || (github.repository == job.workflow_repository && 'deephunch-benchmarks-2' || '') }}
           BASELINE_FILTERS: ${{ inputs.wandb_filters || '{}' }}
         run: |
           mkdir -p /tmp

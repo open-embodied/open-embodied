@@ -11,8 +11,8 @@ with lazy_imports():
     import numpy as np
     import trimesh
 
-    import genesis.utils.geom as gu
-    from genesis.utils.misc import get_assets_dir
+    import deephunch.utils.geom as gu
+    from deephunch.utils.misc import get_assets_dir
 
 
 def _build_plane_contact_model(model_name, condim, friction, plane_size):

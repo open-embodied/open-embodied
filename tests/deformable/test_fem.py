@@ -6,10 +6,10 @@ import torch
 
 import igl
 
-import genesis as gs
-import genesis.utils.geom as gu
-from genesis.engine.render_context import Lines, Points
-from genesis.utils.misc import qd_to_numpy, qd_to_torch, tensor_to_array
+import deephunch as gs
+import deephunch.utils.geom as gu
+from deephunch.engine.render_context import Lines, Points
+from deephunch.utils.misc import qd_to_numpy, qd_to_torch, tensor_to_array
 
 from ..utils.assertions import assert_allclose, assert_equal
 from ..utils.assets import get_hf_dataset
@@ -215,7 +215,7 @@ def test_halt_on_nan(show_viewer):
     assert not is_finite.any()
 
     # The error raises at the beginning of the next step on CPU, and at worst of the one after it on GPU
-    with pytest.raises(gs.GenesisException, match="NaN detected in FEM states"):
+    with pytest.raises(gs.DeepHunchException, match="NaN detected in FEM states"):
         for _ in range(1 if gs.backend == gs.cpu else 2):
             scene.step()
 
@@ -676,7 +676,7 @@ def test_hard_constraint(use_implicit_solver, precision, show_viewer):
     hanging_box = scene.add_entity(spec=hanging_box_spec)
 
     cloth_spec = gs.entities.FEM(morph=gs.morphs.Sphere(), material=gs.materials.FEM.Cloth())
-    with pytest.raises(gs.GenesisException, match="vertices"):
+    with pytest.raises(gs.DeepHunchException, match="vertices"):
         cloth_spec.select(gs.indices.Vertex.at(0)).set_is_fixed(True)
     for vertex_index, match in (
         (gs.indices.Vertex.closest_to(pos=(0.1, 0.1, 0.2), max_distance=0.05), "max_distance"),
@@ -685,16 +685,16 @@ def test_hard_constraint(use_implicit_solver, precision, show_viewer):
     ):
         rejected_spec = hanging_box.spec.model_copy()
         rejected_spec.select(vertex_index).set_is_fixed(True)
-        with pytest.raises(gs.GenesisException, match=match):
+        with pytest.raises(gs.DeepHunchException, match=match):
             gs.Scene().add_entity(spec=rejected_spec)
     disjoint_spec = hanging_box.spec.model_copy()
     disjoint_spec.select(gs.indices.Vertex.at(0) & gs.indices.Vertex.at(1)).set_is_fixed(True)
-    with pytest.raises(gs.GenesisException, match="holds no vertex"):
+    with pytest.raises(gs.DeepHunchException, match="holds no vertex"):
         gs.Scene().add_entity(spec=disjoint_spec)
     # A nested ordinal counts the vertices of the selection alone
     nested_spec = hanging_box.spec.model_copy()
     nested_spec.select(gs.indices.Vertex.at([0, 1])).select(gs.indices.Vertex.at(2)).set_is_fixed(True)
-    with pytest.raises(gs.GenesisException, match="no valid vertex among 2"):
+    with pytest.raises(gs.DeepHunchException, match="no valid vertex among 2"):
         gs.Scene().add_entity(spec=nested_spec)
 
     scene.build(n_envs=2)
@@ -1347,7 +1347,7 @@ def test_sap_coupler_capacity(
         error_pattern = (
             capacity_option if capacity_option == "n_sap_iterations" else rf"ContactHandler needs .*{capacity_option}"
         )
-        with pytest.raises(gs.GenesisException, match=error_pattern):
+        with pytest.raises(gs.DeepHunchException, match=error_pattern):
             for _ in range(5):
                 scene.step()
     else:

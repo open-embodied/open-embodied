@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-import genesis as gs
+import deephunch as gs
 
 from ..utils.assertions import assert_allclose
 

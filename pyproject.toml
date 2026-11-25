@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel", "cython>=3.0.0", "numpy>=1.26.4"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "genesis-world"
+name = "deephunch-world"
 version = "1.5.0"
 description = "A universal and generative physics engine"
 readme = "README.md"
@@ -68,7 +68,7 @@ dependencies = [
     "rtree",
     # Used for loading raytracing special texture images used by LuisaRender
     "OpenEXR",
-    # Native batch renderer specifically designed for Genesis
+    # Native batch renderer specifically designed for DeepHunch
     "gs-madrona==0.0.10; platform_system=='Linux' and (platform_machine=='x86_64' or platform_machine=='AMD64')",
     # Used for mesh simplification
     "fast_simplification>=0.1.12",
@@ -98,7 +98,7 @@ dev = [
     # * Mujoco 3.3.6 made contact islands an opt-out option instead of opt-in,
     #   which requires setting the disableflags 'mjDSBL_ISLAND'.
     # * Mujoco 3.5.0 fixed computation of link invweight when degenerated.
-    # * Mujoco 3.10.0 aligned the primal solvers with Genesis (Hager-Zhang CG update, shifted linesearch costs);
+    # * Mujoco 3.10.0 aligned the primal solvers with DeepHunch (Hager-Zhang CG update, shifted linesearch costs);
     #   the step-by-step solver consistency tests only hold when both engines run the same algorithm.
     "mujoco>=3.10.0,<3.11.0",
     # Used by the locomotion environments to batch observations
@@ -146,14 +146,14 @@ usd = [
 ]
 
 [project.scripts]
-gs = "genesis._main:main"
+gs = "deephunch._main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["genesis", "genesis.*"]
+include = ["deephunch", "deephunch.*"]
 
 [tool.setuptools.package-data]
-genesis = [
+deephunch = [
     "assets/*",
     "ext/pyrender/fonts/*",
     "ext/pyrender/shaders/*",
@@ -219,5 +219,5 @@ log_cli_level = "WARNING"
 
 [tool.uv]
 # uv respects the build-system and project tables
-# PyTorch must be installed separately before Genesis due to platform-specific builds
+# PyTorch must be installed separately before DeepHunch due to platform-specific builds
 # See README.md for installation instructions with different PyTorch backends

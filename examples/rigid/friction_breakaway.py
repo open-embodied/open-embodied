@@ -13,8 +13,8 @@ limit and slips past it. See the 'friction_cone' and 'impratio' options of 'gs.o
 import argparse
 import xml.etree.ElementTree as ET
 
-import genesis as gs
-from genesis.utils.misc import get_assets_dir
+import deephunch as gs
+from deephunch.utils.misc import get_assets_dir
 
 
 GRAVITY = 9.81

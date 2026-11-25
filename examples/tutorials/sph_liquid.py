@@ -1,6 +1,6 @@
 import os
 
-import genesis as gs
+import deephunch as gs
 
 
 gs.init(backend=gs.cpu)

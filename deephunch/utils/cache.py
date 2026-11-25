@@ -1,0 +1,438 @@
+"""Caches of DeepHunch: where they live on disk, how their keys are computed, and the in-memory caches shared across
+scenes."""
+
+import dataclasses
+import functools
+import hashlib
+import marshal
+import os
+import sys
+import types
+import weakref
+from collections import OrderedDict
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+import numba as nb
+from pydantic import BaseModel
+
+import deephunch as gs
+
+# Bumped when the layout of the entries of the on-disk caches changes: forces a cache miss on entries of another layout.
+CACHE_FORMAT_VERSION = 1
+
+
+def get_cache_dir():
+    cache_dir = os.environ.get("GS_CACHE_FILE_PATH")
+    if cache_dir is not None:
+        return cache_dir
+    root_cache_dir = None
+    if sys.platform == "linux":
+        root_cache_dir = os.environ.get("XDG_CACHE_HOME")
+    if root_cache_dir is None:
+        root_cache_dir = os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(root_cache_dir, "deephunch")
+
+
+def get_gsd_cache_dir():
+    return os.path.join(get_cache_dir(), "gsd")
+
+
+def get_gnd_cache_dir():
+    return os.path.join(get_cache_dir(), "terrain")
+
+
+def get_cvx_cache_dir():
+    return os.path.join(get_cache_dir(), "cvx")
+
+
+def get_ptc_cache_dir():
+    return os.path.join(get_cache_dir(), "ptc")
+
+
+def get_fps_pc_cache_dir():
+    return os.path.join(get_cache_dir(), "fps_pc")
+
+
+def get_tet_cache_dir():
+    return os.path.join(get_cache_dir(), "tet")
+
+
+def get_gel_cache_dir():
+    return os.path.join(get_cache_dir(), "gel")
+
+
+def get_remesh_cache_dir():
+    return os.path.join(get_cache_dir(), "rm")
+
+
+def get_wt_cache_dir():
+    return os.path.join(get_cache_dir(), "wt")
+
+
+def get_wth_cache_dir():
+    return os.path.join(get_cache_dir(), "wth")
+
+
+def get_exr_cache_dir():
+    return os.path.join(get_cache_dir(), "exr")
+
+
+def get_usd_cache_dir():
+    return os.path.join(get_cache_dir(), "usd")
+
+
+_CLEARABLE_CACHES: list[Callable[[], None]] = []
+
+
+def register_cache_clear(cache_clear: Callable[[], None]) -> None:
+    """Register a callback that drops a module-level cache, invoked by clear_caches on deephunch teardown.
+
+    Pass the cache's own clearing method, e.g. the cache_clear of a functools.lru_cache or the clear of a manual dict
+    cache. This lets module-level asset caches (parsed meshes, baked textures, ...) release the large arrays they hold
+    for destroyed scenes without the teardown path having to know about each one. A bound method is held through a weak
+    reference, so that registering a cache never keeps it alive.
+    """
+    _CLEARABLE_CACHES.append(
+        weakref.WeakMethod(cache_clear) if isinstance(cache_clear, types.MethodType) else cache_clear
+    )
+
+
+def clear_caches() -> None:
+    """Drop every cache registered through register_cache_clear, the ones already collected aside."""
+    for cache_clear in _CLEARABLE_CACHES:
+        if isinstance(cache_clear, weakref.WeakMethod):
+            cache_clear = cache_clear()
+        if cache_clear is not None:
+            cache_clear()
+
+
+class SizeCappedCache:
+    """An LRU cache bounded by the total byte footprint of its values rather than by their count.
+
+    Each value is stored together with an explicit size in bytes; once the running total exceeds max_bytes the
+    least-recently-used entries are evicted until it fits again (the most-recent entry is always kept). This suits
+    caching a handful of large, scene-independent arrays - such as processed collision geometry - where the number of
+    distinct entries is a poor proxy for the memory actually held. An optional max_entries also caps the entry count,
+    so values whose reported size is small or zero (e.g. flat-color textures) cannot accumulate without bound. It
+    registers itself with register_cache_clear so it is dropped together with the other asset caches on deephunch
+    teardown.
+    """
+
+    def __init__(self, max_bytes: int, max_entries: "int | None" = None) -> None:
+        self._max_bytes = max_bytes
+        self._max_entries = max_entries
+        self._store: "OrderedDict[Any, tuple[Any, int]]" = OrderedDict()
+        self._total_bytes = 0
+        register_cache_clear(self.clear)
+
+    def get(self, key: Any) -> Any:
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        self._store.move_to_end(key)
+        return entry[0]
+
+    def put(self, key: Any, value: Any, n_bytes: int) -> None:
+        previous = self._store.pop(key, None)
+        if previous is not None:
+            self._total_bytes -= previous[1]
+        self._store[key] = (value, n_bytes)
+        self._total_bytes += n_bytes
+        while len(self._store) > 1 and (
+            self._total_bytes > self._max_bytes
+            or (self._max_entries is not None and len(self._store) > self._max_entries)
+        ):
+            _, (_, evicted_bytes) = self._store.popitem(last=False)
+            self._total_bytes -= evicted_bytes
+
+    def clear(self) -> None:
+        self._store.clear()
+        self._total_bytes = 0
+
+
+# Whether the entries of the owned caches are dropped once their last owner goes (see 'disable_owned_cache_release')
+_is_owned_cache_release_enabled = True
+# Every owned cache, for 'enable_owned_cache_release' to drop the entries left without owner meanwhile
+_OWNED_CACHES: weakref.WeakSet["OwnedCache"] = weakref.WeakSet()
+
+
+def disable_owned_cache_release() -> None:
+    """Keep the entries of the owned caches whose last owner goes, until 'enable_owned_cache_release' is called.
+
+    Rebuilding a scene in place destroys the objects owning its cached data, its meshes among them, before the rebuilt
+    scene asks for the same data again. Disabling the release around the rebuild keeps that data instead of computing
+    it anew, the way 'gc.disable' holds off the cyclic garbage collector.
+    """
+    global _is_owned_cache_release_enabled
+    _is_owned_cache_release_enabled = False
+
+
+def enable_owned_cache_release() -> None:
+    """Drop the entries of the owned caches that no object owns any more, and the next ones as their last owner goes."""
+    global _is_owned_cache_release_enabled
+    _is_owned_cache_release_enabled = True
+    for cache in _OWNED_CACHES:
+        for key in [key for key, entry in cache._entries.items() if entry.n_owners == 0]:
+            del cache._entries[key]
+
+
+def is_owned_cache_release_enabled() -> bool:
+    """Whether the entries of the owned caches are dropped once their last owner goes.
+
+    See 'disable_owned_cache_release'.
+    """
+    return _is_owned_cache_release_enabled
+
+
+@dataclasses.dataclass
+class OwnedCacheEntry:
+    """Value of an entry of an 'OwnedCache', with the number of objects that own it."""
+
+    value: Any
+    n_owners: int
+
+
+class OwnedCache:
+    """Cache whose entries live as long as any of the objects that requested them.
+
+    The object requesting an entry becomes one of its owners, and the entry is dropped once the last of its owners is
+    garbage collected or gives it up, unless the release is disabled (see 'disable_owned_cache_release'). Objects of
+    several scenes asking for one entry share it, whichever scene goes first, and an entry never outlives the objects
+    using it, which bounds the memory it holds without evicting anything still in use. It registers itself with
+    register_cache_clear so it is dropped together with the other caches on deephunch teardown.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[Any, OwnedCacheEntry] = {}
+        # The entries each owner holds, by a weak reference to the owner, which compares equal to any other weak
+        # reference to it while it lives
+        self._owners_entries: dict[weakref.ReferenceType, dict[Any, OwnedCacheEntry]] = {}
+        register_cache_clear(self.clear)
+        _OWNED_CACHES.add(self)
+
+    def get(self, owner: Any, key: Any, compute: Callable[[], Any]) -> Any:
+        """Return the value of an entry, computed if no entry holds it yet, and make the object asking for it own it.
+
+        'key' identifies the entry, 'compute' computes its value, and 'owner' asks for it (see 'own').
+        """
+        value = self.find(key)
+        return self.own(owner, key, compute() if value is None else value)
+
+    def own(self, owner: Any, key: Any, value: Any) -> Any:
+        """Make an object own an entry, holding a given value if no entry holds one yet, and return its value.
+
+        'key' identifies the entry and 'owner' owns it, the entry holding 'value' unless it already holds another one.
+        'owner' must support weak references and must not be referenced by the value, which would keep it alive.
+        """
+        owner_ref = weakref.ref(owner)
+        owner_entries = self._owners_entries.get(owner_ref)
+        if owner_entries is None:
+            # The callback reaches the cache through a weak reference, so that a pending callback never keeps it alive
+            owner_ref = weakref.ref(owner, functools.partial(_release_collected_owner, weakref.ref(self)))
+            owner_entries = {}
+            self._owners_entries[owner_ref] = owner_entries
+        entry = owner_entries.get(key)
+        if entry is None:
+            entry = self._entries.get(key)
+            if entry is None:
+                entry = OwnedCacheEntry(value, 0)
+            entry.n_owners += 1
+            owner_entries[key] = entry
+            # A collection running since the lookup may have dropped the entry along with its last other owner
+            self._entries[key] = entry
+        return entry.value
+
+    def find(self, key: Any) -> Any:
+        """Return the value of an entry, or None if no entry holds it, without owning it."""
+        entry = self._entries.get(key)
+        return None if entry is None else entry.value
+
+    def release(self, owner: Any) -> None:
+        """Give up the entries an object owns, dropping those it was the last owner of.
+
+        'owner' may ask for entries again afterwards.
+        """
+        _release_owned_entries(self._entries, self._owners_entries.get(weakref.ref(owner), {}))
+
+    def clear(self) -> None:
+        """Drop every entry, whoever owns it."""
+        self._entries.clear()
+        self._owners_entries.clear()
+
+
+def _release_owned_entries(entries: dict[Any, OwnedCacheEntry], owner_entries: dict[Any, OwnedCacheEntry]) -> None:
+    """Give up the entries an owner of an 'OwnedCache' holds, dropping those it was the last owner of."""
+    for key, entry in owner_entries.items():
+        entry.n_owners -= 1
+        # The entry stored under the key may be another one, the cache having been cleared since
+        if entry.n_owners == 0 and _is_owned_cache_release_enabled and entries.get(key) is entry:
+            del entries[key]
+    owner_entries.clear()
+
+
+def _release_collected_owner(cache_ref: weakref.ReferenceType[OwnedCache], owner_ref: weakref.ReferenceType) -> None:
+    """Give up the entries an owner of an 'OwnedCache' held, once it is garbage collected."""
+    cache = cache_ref()
+    if cache is not None:
+        _release_owned_entries(cache._entries, cache._owners_entries.pop(owner_ref, {}))
+
+
+def get_gsd_path(verts, faces, sdf_res, sdf_cell_size):
+    # The mesh, the resolution and the cell size determine the grid. The schema tag is bumped whenever the values of a
+    # file change, which forces a cache miss on stale entries.
+    schema = "v5-fast-winding"
+    hashkey = get_hashkey(verts, faces, sdf_res, sdf_cell_size, schema, CACHE_FORMAT_VERSION)
+    return os.path.join(get_gsd_cache_dir(), f"{hashkey}.gsd")
+
+
+def get_gnd_path(
+    name, subterrain_types, subterrain_size, horizontal_scale, vertical_scale, n_subterrains, subterrain_parameters
+):
+    hashkey = get_hashkey(
+        name,
+        subterrain_types,
+        subterrain_size,
+        horizontal_scale,
+        vertical_scale,
+        n_subterrains,
+        subterrain_parameters,
+        CACHE_FORMAT_VERSION,
+    )
+    return os.path.join(get_gnd_cache_dir(), f"{hashkey}.gnd")
+
+
+def get_exr_path(file_path):
+    hashkey = get_hashkey(Path(file_path))
+    return os.path.join(get_exr_cache_dir(), f"{hashkey}.exr")
+
+
+def get_usd_zip_path(file_path):
+    hashkey = get_hashkey(Path(file_path))
+    return os.path.join(get_usd_cache_dir(), "zip", hashkey)
+
+
+def get_usd_bake_path(file_path):
+    hashkey = get_hashkey(Path(file_path))
+    return os.path.join(get_usd_cache_dir(), "bake", hashkey)
+
+
+# Primes of the 64-bit xxHash (XXH64)
+_XXH64_PRIME_1 = np.uint64(0x9E3779B185EBCA87)
+_XXH64_PRIME_2 = np.uint64(0xC2B2AE3D27D4EB4F)
+_XXH64_PRIME_3 = np.uint64(0x165667B19E3779F9)
+_XXH64_PRIME_4 = np.uint64(0x85EBCA77C2B2AE63)
+_XXH64_PRIME_5 = np.uint64(0x27D4EB2F165667C5)
+
+
+@nb.jit(nopython=True, cache=True)
+def xxh64(data):
+    """Compute the 64-bit xxHash (XXH64) digest of a byte array, with seed zero.
+
+    XXH64 is a non-cryptographic hash running close to memory bandwidth, with a negligible accidental collision rate.
+    'data' is a contiguous one-dimensional array of bytes. Returns the digest as an unsigned 64-bit integer, which
+    matches the reference implementation on little-endian machines.
+    """
+    n_bytes = data.shape[0]
+    n_stripes = n_bytes // 32
+    words = data[: n_stripes * 32].view(np.uint64)
+    # The four lanes are scalars, so that they stay in registers
+    lane_0 = _XXH64_PRIME_1 + _XXH64_PRIME_2
+    lane_1 = _XXH64_PRIME_2
+    lane_2 = np.uint64(0)
+    lane_3 = np.uint64(0) - _XXH64_PRIME_1
+    for i_stripe in range(n_stripes):
+        acc = lane_0 + words[4 * i_stripe] * _XXH64_PRIME_2
+        lane_0 = ((acc << np.uint64(31)) | (acc >> np.uint64(33))) * _XXH64_PRIME_1
+        acc = lane_1 + words[4 * i_stripe + 1] * _XXH64_PRIME_2
+        lane_1 = ((acc << np.uint64(31)) | (acc >> np.uint64(33))) * _XXH64_PRIME_1
+        acc = lane_2 + words[4 * i_stripe + 2] * _XXH64_PRIME_2
+        lane_2 = ((acc << np.uint64(31)) | (acc >> np.uint64(33))) * _XXH64_PRIME_1
+        acc = lane_3 + words[4 * i_stripe + 3] * _XXH64_PRIME_2
+        lane_3 = ((acc << np.uint64(31)) | (acc >> np.uint64(33))) * _XXH64_PRIME_1
+
+    if n_stripes > 0:
+        acc = (
+            ((lane_0 << np.uint64(1)) | (lane_0 >> np.uint64(63)))
+            + ((lane_1 << np.uint64(7)) | (lane_1 >> np.uint64(57)))
+            + ((lane_2 << np.uint64(12)) | (lane_2 >> np.uint64(52)))
+            + ((lane_3 << np.uint64(18)) | (lane_3 >> np.uint64(46)))
+        )
+        for lane in (lane_0, lane_1, lane_2, lane_3):
+            lane *= _XXH64_PRIME_2
+            lane = ((lane << np.uint64(31)) | (lane >> np.uint64(33))) * _XXH64_PRIME_1
+            acc = (acc ^ lane) * _XXH64_PRIME_1 + _XXH64_PRIME_4
+    else:
+        acc = _XXH64_PRIME_5
+    acc += np.uint64(n_bytes)
+
+    # The bytes past the last stripe go by words of 8, then 4, then one by one, read in little-endian order
+    i_byte = n_stripes * 32
+    for _ in range((n_bytes - i_byte) // 8):
+        word = np.uint64(0)
+        for k in range(8):
+            word |= np.uint64(data[i_byte + k]) << np.uint64(8 * k)
+        word *= _XXH64_PRIME_2
+        word = ((word << np.uint64(31)) | (word >> np.uint64(33))) * _XXH64_PRIME_1
+        acc ^= word
+        acc = ((acc << np.uint64(27)) | (acc >> np.uint64(37))) * _XXH64_PRIME_1 + _XXH64_PRIME_4
+        i_byte += 8
+    if n_bytes - i_byte >= 4:
+        word = np.uint64(0)
+        for k in range(4):
+            word |= np.uint64(data[i_byte + k]) << np.uint64(8 * k)
+        acc ^= word * _XXH64_PRIME_1
+        acc = ((acc << np.uint64(23)) | (acc >> np.uint64(41))) * _XXH64_PRIME_2 + _XXH64_PRIME_3
+        i_byte += 4
+    for i_byte_ in range(i_byte, n_bytes):
+        acc ^= np.uint64(data[i_byte_]) * _XXH64_PRIME_5
+        acc = ((acc << np.uint64(11)) | (acc >> np.uint64(53))) * _XXH64_PRIME_1
+
+    acc ^= acc >> np.uint64(33)
+    acc *= _XXH64_PRIME_2
+    acc ^= acc >> np.uint64(29)
+    acc *= _XXH64_PRIME_3
+    acc ^= acc >> np.uint64(32)
+    return acc
+
+
+def get_hashkey(*args):
+    # Containers are replaced by the tuples of their items, sorted for sets and for dicts other than OrderedDict since
+    # equal ones may iterate in different orders (string hashes are salted per process). A pydantic model is replaced by
+    # its type and the values of its fields, which leaves out the values cached on the instance. Items are replaced
+    # before their container, so that sorting compares canonical representations, which order items of any type.
+    values, nodes = [], [(args, False)]
+    while nodes:
+        node, is_expanded = nodes.pop()
+        if is_expanded:
+            items = [values.pop() for _ in range(len(node))]
+            if isinstance(node, (set, frozenset)) or (isinstance(node, dict) and not isinstance(node, OrderedDict)):
+                items.sort(key=repr)
+            values.append(tuple(items))
+        elif isinstance(node, BaseModel):
+            fields = type(node).model_fields
+            nodes.append(([type(node).__qualname__, *[value for name, value in node if name in fields]], False))
+        elif isinstance(node, (dict, list, tuple, set, frozenset)):
+            nodes.append((node, True))
+            nodes.extend([(item, False) for item in (node.items() if isinstance(node, dict) else node)])
+        else:
+            if isinstance(node, Path):
+                file_stats = node.stat()
+                node = (str(node), file_stats.st_size, file_stats.st_mtime)
+            if isinstance(node, str):
+                node = node.encode()
+            elif not isinstance(node, bytes):
+                try:
+                    buffer = memoryview(node)
+                except TypeError:
+                    node = marshal.dumps(node)
+                else:
+                    # A buffer is hashed in place, sparing a copy of a large array, together with its layout so that
+                    # the same bytes read with another shape or item type give another key.
+                    data = np.frombuffer(buffer if buffer.c_contiguous else buffer.tobytes(), dtype=np.uint8)
+                    node = marshal.dumps((buffer.format, buffer.shape, xxh64(data)))
+            values.append(node)
+    return hashlib.sha256(marshal.dumps((values[0], gs.__version__))).hexdigest()
