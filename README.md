@@ -1,4 +1,4 @@
-# Open-Embodied   Body, Hand and Sim2world
+# Open-Embodied   
 
 The Open Source Robot Real Time OS for the  Embodied  Time 
 
