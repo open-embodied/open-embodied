@@ -37,6 +37,12 @@ https://www.deepopen.com
 
 Opensource Embodied Datasets [Opensource Embodied Datasets](https://robot-ai.gitcc.com/)
 
+# Benchmark
+
+[Benchmark](https://aie.gitcc.com/aic/talk/embodied-benchmark-book.html)
+
+
+
 # Book
 
 The Open Landscape of Embodied AI[The Open Landscape of Embodied AI](https://aie.gitcc.com/aic/embodied/embodied-ai-en.html)
