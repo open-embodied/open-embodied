@@ -1,12 +1,12 @@
-# Open-Embodied   
+# Open-Embodied   ---  The Open Source Embodied Robot  
 
-The Open Source Robot Real Time OS for the  Embodied  Time 
+The Open Source Embodied Robot  
 
 BOOK   The Open Landscape of Embodied AI[The Open Landscape of Embodied AI](https://aie.gitcc.com/aic/embodied/embodied-ai-en.html)
 
 embodied by
 
-Harvard University, Stanford University, Peking University, BUPT and more
+Harvard University, Stanford University, Peking University, BUPT and more  
 
 
 # Open Embodied  Hardware
